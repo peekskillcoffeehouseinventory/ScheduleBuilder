@@ -185,7 +185,7 @@
   .to-row .tor-del:hover{color:var(--danger);}
 
   /* ===== SCHEDULE BUILDER ===== */
-  .wrap.wide{max-width:1080px;}
+  .wrap.wide{max-width:min(1600px, 96vw);}
   .date-header{display:flex;gap:14px;align-items:flex-end;margin:1.5rem 0 1.75rem;flex-wrap:wrap;}
   .date-header button.ghost{padding:.6rem .9rem;font-size:13.5px;}
   .field.inline{margin-bottom:0;}
@@ -387,6 +387,8 @@
         <button type="button" class="ghost toggle-btn active" id="toggleTemplatesBtn">🗂 Templates</button>
         <button type="button" class="ghost toggle-btn" id="checkStaffBtn">👤 Check Staff</button>
         <button type="button" class="ghost" id="printScheduleBtn">🖨 Print</button>
+        <button type="button" class="ghost" id="saveProgressBtn">💾 Save</button>
+        <span class="status-text" id="saveProgressStatus" style="align-self:center;"></span>
         <button type="button" class="ghost" id="editScheduleBtn" style="display:none;">✏️ Edit</button>
         <button type="button" class="primary" id="saveAndPublishBtn" style="display:none;">💾 Save &amp; Publish Changes</button>
         <span class="status-text" id="scheduleStatusLabel" style="align-self:center;font-weight:700;"></span>
@@ -1070,16 +1072,20 @@ const ROLE_LABEL = {bar:'Barista', kitchen:'Kitchen', lead:'Team Lead', dish:'Di
 const ROLE_VAR = {bar:'--bar', kitchen:'--kitchen', lead:'--lead', dish:'--dish', register:'--amber'};
 
 function to12h(t){
-  if(!t) return '';
+  if(!t || typeof t !== 'string' || !/^\d{1,2}:\d{2}$/.test(t)) return '';
   const [h,m] = t.split(':').map(Number);
+  if(isNaN(h) || isNaN(m)) return '';
   const period = h >= 12 ? 'p' : 'a';
   let hh = h % 12; if(hh===0) hh=12;
   return m===0 ? `${hh}${period}` : `${hh}:${String(m).padStart(2,'0')}${period}`;
 }
 
 function breakLabel(start, end){
+  if(!start || !end || typeof start !== 'string' || typeof end !== 'string') return '';
+  if(!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) return '';
   const [sh,sm] = start.split(':').map(Number);
   const [eh,em] = end.split(':').map(Number);
+  if(isNaN(sh)||isNaN(sm)||isNaN(eh)||isNaN(em)) return '';
   const mins = (eh*60+em) - (sh*60+sm);
   if(mins < 390) return ''; // 6.5 hrs = 390 min
   const midMin = (sh*60+sm) + Math.round(mins/2);
@@ -1217,7 +1223,7 @@ function renderShiftRows(){
 }
 
 document.getElementById('addShiftBtn').addEventListener('click', ()=>{
-  editingShifts.push({id:'s_'+Date.now(), start:'09:00', end:'14:00', role:'bar'});
+  editingShifts.push({id:'s_'+Date.now(), start:'', end:'', role:'bar'});
   renderShiftRows();
 });
 document.getElementById('editTmplCancelBtn').addEventListener('click', ()=>{
@@ -1677,6 +1683,7 @@ function updateEditorChrome(){
     saveAndPublishBtn.style.display = 'none';
     timeOffBtn.style.display = '';
     document.getElementById('printScheduleBtn').style.display = 'none';
+    document.getElementById('saveProgressBtn').style.display = '';
     document.getElementById('builderLayout').classList.remove('templates-hidden');
     templatesToggle.classList.add('active');
   } else {
@@ -1685,6 +1692,7 @@ function updateEditorChrome(){
     timeOffBtn.style.display = 'none'; // not needed once a schedule is live
     document.getElementById('printScheduleBtn').style.display = '';
     const locked = currentScheduleReadOnly;
+    document.getElementById('saveProgressBtn').style.display = locked ? 'none' : '';
     templatesToggle.style.display = locked ? 'none' : '';
     autoPopToolbar.style.display = locked ? 'none' : 'flex';
     editBtn.style.display = locked ? '' : 'none';
@@ -1717,6 +1725,22 @@ document.getElementById('saveAndPublishBtn').addEventListener('click', ()=>{
 
 document.getElementById('printScheduleBtn').addEventListener('click', ()=>{
   openPrintView(activeScheduleKey);
+});
+
+document.getElementById('saveProgressBtn').addEventListener('click', ()=>{
+  const statusEl = document.getElementById('saveProgressStatus');
+  statusEl.textContent = 'Saving…';
+  statusEl.style.color = 'var(--ink-soft)';
+  save();
+  saveTemplates();
+  saveSchedules();
+  if(activeScheduleKey) saveWeeks();
+  setTimeout(()=>{
+    statusEl.textContent = '✓ Saved';
+    statusEl.style.color = 'var(--success)';
+    clearTimeout(document.getElementById('saveProgressStatus')._t);
+    document.getElementById('saveProgressStatus')._t = setTimeout(()=>{ statusEl.textContent = ''; }, 3000);
+  }, 400);
 });
 
 function openCurrentScheduleScreen(){
