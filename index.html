@@ -266,7 +266,7 @@
   .preview-shift .ps-name{font-size:12.5px;font-weight:600;color:var(--ink);}
   .preview-shift .ps-time{font-size:11px;color:var(--ink-soft);margin-top:1px;}
 
-  .shift-row{display:grid;grid-template-columns:100px 100px 1fr 28px;gap:8px;align-items:center;margin-bottom:8px;}
+  .shift-row{display:grid;grid-template-columns:100px 100px 100px 1fr 28px;gap:8px;align-items:center;margin-bottom:8px;}
   .shift-row input, .shift-row select{font-size:12.5px;padding:.45rem .5rem;border-radius:7px;border:1.5px solid var(--line);font-family:inherit;background:var(--white);color:var(--ink);}
   .shift-row .rm-shift{background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:14px;}
   .shift-row .rm-shift:hover{color:var(--danger);}
@@ -350,7 +350,7 @@
       <h1>Current Schedule</h1>
       <p class="subhead">The published schedule. Edits here are highlighted in yellow so changes stand out.</p>
     </header>
-    <div class="placeholder-box" id="noPublishedMsg">Nothing published yet — publish a draft from the Schedule Builder.</div>
+    <div class="placeholder-box" id="noPublishedMsg">No published schedule covers today's date — check the Schedule Builder to publish one, or find any schedule there directly.</div>
     <div id="currentScheduleMount"></div>
   </div>
 </div>
@@ -709,14 +709,14 @@ function templatesToRows(list){
   const templateRows = list.map(t => ({ id:t.id, name:t.name, color:t.color }));
   const shiftRows = [];
   list.forEach(t => (t.shifts||[]).forEach(s => {
-    shiftRows.push({ id:s.id, template_id:t.id, start:s.start, end:s.end, role:s.role });
+    shiftRows.push({ id:s.id, template_id:t.id, start:s.start, end:s.end, role:s.role, breakTime:s.breakTime||'' });
   }));
   return { templateRows, shiftRows };
 }
 function rowsToTemplates(templateRows, shiftRows){
   return templateRows.map(t => ({
     id:t.id, name:t.name, color:t.color,
-    shifts: shiftRows.filter(s => s.template_id === t.id).map(s => ({ id:s.id, start:s.start, end:s.end, role:s.role }))
+    shifts: shiftRows.filter(s => s.template_id === t.id).map(s => ({ id:s.id, start:s.start, end:s.end, role:s.role, breakTime:s.breakTime||'' }))
   }));
 }
 function schedulesToRows(list){
@@ -1095,7 +1095,7 @@ function to12h(t){
   return m===0 ? `${hh}${period}` : `${hh}:${String(m).padStart(2,'0')}${period}`;
 }
 
-function breakLabel(start, end){
+function breakLabel(start, end, manualBreak){
   if(!start || !end || typeof start !== 'string' || typeof end !== 'string') return '';
   if(!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) return '';
   const [sh,sm] = start.split(':').map(Number);
@@ -1103,6 +1103,8 @@ function breakLabel(start, end){
   if(isNaN(sh)||isNaN(sm)||isNaN(eh)||isNaN(em)) return '';
   const mins = (eh*60+em) - (sh*60+sm);
   if(mins < 390) return ''; // 6.5 hrs = 390 min
+  // Manually-specified break time takes priority; only fall back to the midpoint if none was set.
+  if(manualBreak && /^\d{1,2}:\d{2}$/.test(manualBreak)) return ` (~${to12h(manualBreak)})`;
   const midMin = (sh*60+sm) + Math.round(mins/2);
   const mh = Math.floor(midMin/60)%24, mm = midMin%60;
   return ` (~${to12h(`${String(mh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`)})`;
@@ -1174,7 +1176,7 @@ function renderPreview(){
   }
   const shifts = (t.shifts||[]).slice().sort((a,b)=> a.start.localeCompare(b.start));
   const rows = shifts.map(s=>{
-    const brk = breakLabel(s.start, s.end);
+    const brk = breakLabel(s.start, s.end, s.breakTime);
     return `<div class="preview-shift role-${s.role}">
       <div>
         <div class="ps-name">${ROLE_LABEL[s.role]}</div>
@@ -1199,15 +1201,25 @@ function openEditTemplate(id){
   document.getElementById('tmpl-name').focus();
 }
 
+function shiftDurationMinutes(start, end){
+  if(!start || !end) return 0;
+  const [sh,sm] = start.split(':').map(Number);
+  const [eh,em] = end.split(':').map(Number);
+  if(isNaN(sh)||isNaN(sm)||isNaN(eh)||isNaN(em)) return 0;
+  return (eh*60+em) - (sh*60+sm);
+}
+
 function renderShiftRows(){
   const wrap = document.getElementById('shiftRows');
   wrap.innerHTML = '';
   editingShifts.forEach((s,i)=>{
     const row = document.createElement('div');
     row.className = 'shift-row';
+    const needsBreak = shiftDurationMinutes(s.start, s.end) >= 390;
     row.innerHTML = `
       <input type="time" value="${s.start}" data-i="${i}" data-f="start">
       <input type="time" value="${s.end}" data-i="${i}" data-f="end">
+      <input type="time" value="${s.breakTime||''}" data-i="${i}" data-f="breakTime" class="time-slot${needsBreak?' show':''}" title="Break time (required 6.5hrs+)">
       <select data-i="${i}" data-f="role">
         ${Object.keys(ROLE_LABEL).map(r=>`<option value="${r}" ${r===s.role?'selected':''}>${ROLE_LABEL[r]}</option>`).join('')}
       </select>
@@ -1219,6 +1231,12 @@ function renderShiftRows(){
   wrap.querySelectorAll('select[data-f="role"]').forEach(el=>{
     el.addEventListener('change', ()=>{
       editingShifts[+el.dataset.i].role = el.value;
+    });
+  });
+  // Break time: just update, no reorder needed
+  wrap.querySelectorAll('input[data-f="breakTime"]').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      editingShifts[+el.dataset.i].breakTime = el.value;
     });
   });
   // Start/end time edits: update, then re-sort by start time once the value is committed
@@ -1238,7 +1256,7 @@ function renderShiftRows(){
 }
 
 document.getElementById('addShiftBtn').addEventListener('click', ()=>{
-  editingShifts.push({id:'s_'+Date.now(), start:'', end:'', role:'bar'});
+  editingShifts.push({id:'s_'+Date.now(), start:'', end:'', role:'bar', breakTime:''});
   renderShiftRows();
 });
 document.getElementById('editTmplCancelBtn').addEventListener('click', ()=>{
@@ -1281,7 +1299,8 @@ function normalizeDayEntry(entry){
 }
 
 function isLockedView(){
-  return editorMode === 'published' && currentScheduleReadOnly;
+  const sc = schedules.find(x=>x.startDate===activeScheduleKey);
+  return !!(sc && sc.status === 'published') && currentScheduleReadOnly;
 }
 
 let dayNotesEditIndex = null;
@@ -1322,12 +1341,17 @@ function openPrintView(startDate){
   const ROLE_HEX = { bar:'#0B5FCC', kitchen:'#1E8E3E', lead:'#8E24AA', dish:'#546E7A', register:'#C7841E' };
   const highlightEmpId = checkStaffSelectedId; // if someone's selected in Check Staff, mark their shifts
   const highlightEmp = highlightEmpId ? employees.find(e=>e.id===highlightEmpId) : null;
+  const sc = schedules.find(x=>x.startDate===startDate);
+  const snapshot = (sc && sc.status==='published' && sc.publishedSnapshot)
+    ? JSON.parse(sc.publishedSnapshot).map(normalizeDayEntry)
+    : null;
 
   function buildDayCell(i){
     const d = new Date(start); d.setDate(start.getDate()+i);
     const dateLabel = d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
     const entry = dayEntries[i] || { templateId:null, assignments:{} };
     const tmpl = entry.templateId ? templates.find(t=>t.id===entry.templateId) : null;
+    const snapDay = snapshot ? snapshot[i] : null;
     let shiftsHtml = '<div style="color:#aaa;font-size:8px;">No shifts</div>';
     if(tmpl){
       const shifts = (tmpl.shifts||[]).slice().sort((a,b)=>(a.start||'').localeCompare(b.start||''));
@@ -1336,10 +1360,15 @@ function openPrintView(startDate){
         const emp = empId ? employees.find(e=>e.id===empId) : null;
         const name = emp ? `${emp.first} ${emp.last}` : '—';
         const nameColor = emp ? getEmployeeColor(emp) : '#333';
-        const brk = breakLabel(s.start, s.end);
+        const brk = breakLabel(s.start, s.end, s.breakTime);
         const color = ROLE_HEX[s.role] || '#999';
         const isHighlighted = highlightEmpId && empId === highlightEmpId;
-        const highlightStyle = isHighlighted ? 'background:#FFF3B0;box-shadow:0 0 0 1.5px #F4C430;' : '';
+        const wasAssignedId = snapDay ? (snapDay.assignments[s.id] || '') : (empId||'');
+        const isChanged = snapshot && wasAssignedId !== (empId||'');
+        // Edited-since-publish (solid highlighter yellow) takes priority over the Check Staff spot-highlight.
+        const highlightStyle = isChanged
+          ? 'background:#FFEB3B;box-shadow:inset 0 0 0 1.5px #E6C700;'
+          : (isHighlighted ? 'background:#FFF3B0;box-shadow:0 0 0 1.5px #F4C430;' : '');
         return `<div style="border-left:3px solid ${color};padding:1.5px 4px;margin-bottom:2px;${highlightStyle}">
           <div style="font-weight:700;font-size:8px;color:${nameColor};">${escapeHtml(name)}</div>
           <div style="color:#666;font-size:7px;">${ROLE_LABEL[s.role]} · ${to12h(s.start)}–${to12h(s.end)}${brk}</div>
@@ -1457,7 +1486,7 @@ function renderDayGrid(){
       const dateStr = d.toISOString().slice(0,10);
       const snapDay = snapshot ? snapshot[i] : null;
       const shiftsHtml = shifts.map(s=>{
-        const brk = breakLabel(s.start, s.end);
+        const brk = breakLabel(s.start, s.end, s.breakTime);
         const assignedId = dayEntry.assignments[s.id] || '';
         const wasAssignedId = snapDay ? (snapDay.assignments[s.id] || '') : assignedId;
         const changed = snapshot && wasAssignedId !== assignedId;
@@ -1603,17 +1632,19 @@ function renderScheduleList(){
   const wrap = document.getElementById('scheduleList');
   const emptyEl = document.getElementById('scheduleListEmpty');
   wrap.innerHTML = '';
-  const sorted = schedules.filter(s=>s.status==='draft').sort((a,b)=> a.startDate.localeCompare(b.startDate));
+  const todayStr = new Date().toISOString().slice(0,10);
+  const sorted = schedules.slice().sort((a,b)=> a.startDate.localeCompare(b.startDate));
   emptyEl.style.display = sorted.length ? 'none' : 'block';
   sorted.forEach(s=>{
     const row = document.createElement('div');
+    const isCurrent = s.status==='published' && todayStr >= s.startDate && todayStr <= addDaysToDateStr(s.startDate,13);
     row.className = 'sched-row' + (s.status==='published' ? ' published' : '');
     row.innerHTML = `
       <div>
         <div class="sr-dates">${formatRangeLabel(s.startDate)}</div>
-        <div class="sr-status">${s.status}</div>
+        <div class="sr-status">${s.status}${isCurrent ? ' · covers today' : ''}</div>
       </div>
-      <button type="button" class="sr-del" data-id="${s.id}" title="Delete draft">✕</button>`;
+      <button type="button" class="sr-del" data-id="${s.id}" title="Delete schedule">✕</button>`;
     row.addEventListener('click', e=>{
       if(e.target.closest('button')) return;
       openScheduleEditor(s.startDate);
@@ -1634,17 +1665,19 @@ function renderScheduleList(){
   });
 }
 
-let editorMode = 'draft'; // 'draft' (opened from Builder's list) or 'published' (opened from Current Schedule)
-let currentScheduleReadOnly = true; // only meaningful when editorMode === 'published'
+let scheduleOrigin = 'builder'; // 'builder' or 'dashboard' — controls back-button behavior and where the editor is mounted
+let currentScheduleReadOnly = true; // whether a PUBLISHED schedule is currently locked (irrelevant for drafts, which are always editable)
 
 function openScheduleEditor(startDate){
-  editorMode = 'draft';
+  scheduleOrigin = 'builder';
   document.getElementById('builderEditorMount').appendChild(document.getElementById('builderEditor'));
   activeScheduleKey = startDate;
   document.getElementById('builderList').style.display = 'none';
   document.getElementById('builderEditor').style.display = 'block';
   document.getElementById('weekStart').value = startDate;
   document.getElementById('publishStatus').textContent = '';
+  const sc = schedules.find(x=>x.startDate===startDate);
+  currentScheduleReadOnly = !!(sc && sc.status === 'published'); // published schedules open locked; drafts open fully editable
   resetCheckStaffPanel();
   updateEditorChrome();
   renderDayGrid();
@@ -1654,8 +1687,8 @@ function openScheduleEditor(startDate){
 }
 
 function openPublishedView(startDate){
-  editorMode = 'published';
-  currentScheduleReadOnly = true; // always opens locked
+  scheduleOrigin = 'dashboard';
+  currentScheduleReadOnly = true; // the dashboard shortcut always opens locked
   document.getElementById('currentScheduleMount').appendChild(document.getElementById('builderEditor'));
   activeScheduleKey = startDate;
   document.getElementById('builderEditor').style.display = 'block';
@@ -1691,24 +1724,28 @@ function updateEditorChrome(){
   statusLabel.textContent = isPublished ? '● Published' : '● Draft';
   statusLabel.style.color = isPublished ? 'var(--success)' : 'var(--amber)';
 
-  if(editorMode === 'draft'){
+  // Back button behavior follows where you navigated FROM, independent of the schedule's status.
+  if(scheduleOrigin === 'builder'){
     backBtn.textContent = '← All schedules';
     backBtn.style.display = '';
-    publishBar.style.display = 'flex';
+  } else {
+    backBtn.style.display = 'none'; // Current Schedule's own header already has a Dashboard link
+  }
+
+  publishBar.style.display = isPublished ? 'none' : 'flex'; // the initial Publish button only applies to drafts
+  timeOffBtn.style.display = isPublished ? 'none' : ''; // not needed once a schedule is live
+  document.getElementById('printScheduleBtn').style.display = ''; // always available, wherever you're viewing from
+
+  if(!isPublished){
+    // Drafts are always fully editable — no lock concept applies.
     templatesToggle.style.display = '';
     autoPopToolbar.style.display = 'flex';
     editBtn.style.display = 'none';
     saveAndPublishBtn.style.display = 'none';
-    timeOffBtn.style.display = '';
-    document.getElementById('printScheduleBtn').style.display = 'none';
     document.getElementById('saveProgressBtn').style.display = '';
     document.getElementById('builderLayout').classList.remove('templates-hidden');
     templatesToggle.classList.add('active');
   } else {
-    backBtn.style.display = 'none'; // Current Schedule's own header already has a Dashboard link
-    publishBar.style.display = 'none';
-    timeOffBtn.style.display = 'none'; // not needed once a schedule is live
-    document.getElementById('printScheduleBtn').style.display = '';
     const locked = currentScheduleReadOnly;
     document.getElementById('saveProgressBtn').style.display = locked ? 'none' : '';
     templatesToggle.style.display = locked ? 'none' : '';
@@ -1763,8 +1800,10 @@ document.getElementById('saveProgressBtn').addEventListener('click', ()=>{
 
 function openCurrentScheduleScreen(){
   showScreen('screen-schedule');
-  const key = safeStorage.getItem('pch_published_key');
-  const sc = key ? schedules.find(s=>s.startDate===key && s.status==='published') : null;
+  const todayStr = new Date().toISOString().slice(0,10);
+  // Find whichever published schedule's 14-day range actually contains today's date —
+  // not just "whichever was published most recently."
+  const sc = schedules.find(s => s.status==='published' && todayStr >= s.startDate && todayStr <= addDaysToDateStr(s.startDate,13));
   const noMsg = document.getElementById('noPublishedMsg');
   if(!sc){
     noMsg.style.display = 'block';
@@ -1772,11 +1811,11 @@ function openCurrentScheduleScreen(){
     return;
   }
   noMsg.style.display = 'none';
-  openPublishedView(key);
+  openPublishedView(sc.startDate);
 }
 
 document.getElementById('backToListBtn').addEventListener('click', ()=>{
-  if(editorMode === 'published'){
+  if(scheduleOrigin === 'dashboard'){
     showScreen('screen-dashboard');
     return;
   }
@@ -1997,28 +2036,11 @@ document.getElementById('publishBtn').addEventListener('click', ()=>{
   sc.status = 'published';
   sc.publishedSnapshot = JSON.stringify(weekAssignments[activeScheduleKey] || []);
   saveSchedules();
-  safeStorage.setItem('pch_published_key', activeScheduleKey);
-  // Published schedules move off the Builder's draft list — return there now.
-  document.getElementById('builderEditor').style.display = 'none';
-  document.getElementById('builderList').style.display = 'block';
-  activeScheduleKey = null;
-  renderScheduleList();
-  showListBanner('Published! Find it under Current Schedule from the dashboard — it stays editable there.');
+  currentScheduleReadOnly = true; // now locked by default, same as any published schedule
+  updateEditorChrome();
+  renderDayGrid();
+  document.getElementById('publishStatus').textContent = 'Published! From here on, any edits stay highlighted permanently.';
 });
-
-function showListBanner(text){
-  let el = document.getElementById('listBanner');
-  if(!el){
-    el = document.createElement('div');
-    el.id = 'listBanner';
-    el.style.cssText = 'background:var(--teal-light);color:var(--teal-dark);border-radius:10px;padding:10px 14px;font-size:13px;font-weight:600;margin-bottom:1rem;';
-    document.getElementById('builderList').insertBefore(el, document.getElementById('builderList').firstChild);
-  }
-  el.textContent = text;
-  el.style.display = 'block';
-  clearTimeout(showListBanner._t);
-  showListBanner._t = setTimeout(()=>{ el.style.display = 'none'; }, 6000);
-}
 
 // Initial render happens after bootstrap() loads data (see bottom of file)
 
