@@ -1551,7 +1551,13 @@ function eligibleEmployees(role, dayAbbr, dateStr, shiftStart, shiftEnd){
       (role==='lead' && e.poslead);
     if(!roleMatch) return false;
     const avail = e.availability && e.availability[dayAbbr];
-    if(avail && avail.mode === 'none') return false;
+    if(avail){
+      if(avail.mode === 'none') return false;
+      // "Available before X" — the shift must end at or before that time.
+      if(avail.mode === 'before' && avail.time && shiftEnd && shiftEnd > avail.time) return false;
+      // "Available after X" — the shift must start at or after that time.
+      if(avail.mode === 'after' && avail.time && shiftStart && shiftStart < avail.time) return false;
+    }
     if(dateStr && isOnTimeOff(e.id, dateStr, shiftStart, shiftEnd)) return false;
     return true;
   }).sort((a,b)=> (a.first+a.last).localeCompare(b.first+b.last));
