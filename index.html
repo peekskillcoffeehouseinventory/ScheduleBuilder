@@ -2160,111 +2160,180 @@ document.getElementById('clearAllBtn').addEventListener('click', ()=>{
   document.getElementById('autoPopulateStatus').textContent = 'All shift assignments cleared.';
 });
 
+/* ---- Auto-populate v2: most-constrained-first + multiple attempts, keep the best.
+   Instead of filling shifts in a fixed day/time order, this repeatedly finds whichever
+   still-open shift has the FEWEST eligible candidates right now and fills that one next —
+   so shifts only a couple of people can ever work get first pick of those people, rather
+   than "easy" shifts accidentally using them up first. It also runs several passes with
+   slightly randomized tie-breaking and keeps whichever pass filled the most shifts.
+   Clopen and the 5-consecutive-day rule are checked by looking directly at the current
+   state of neighboring days (both backward AND forward), not a running counter — that
+   makes them correct regardless of what order shifts get filled in.
+   Known limit: still can't see across schedule boundaries into an adjacent published
+   schedule. ---- */
+
+function getDayShiftInfo(entry, templates){
+  if(!entry.templateId) return null;
+  const tmpl = templates.find(t=>t.id===entry.templateId);
+  if(!tmpl) return null;
+  const shifts = (tmpl.shifts||[]).slice().sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+  const minStart = shifts.reduce((m,s)=> (m===null || s.start<m) ? s.start : m, null);
+  const maxEnd = shifts.reduce((m,s)=> (m===null || s.end>m) ? s.end : m, null);
+  return { tmpl, shifts, minStart, maxEnd };
+}
+function didWorkDay(dayEntries, dayIndex, empId){
+  if(dayIndex<0 || dayIndex>=14) return false;
+  return Object.values(dayEntries[dayIndex].assignments||{}).includes(empId);
+}
+function wasClosingOnDay(dayEntries, dayIndex, empId, templates){
+  if(dayIndex<0 || dayIndex>=14) return false;
+  const entry = dayEntries[dayIndex];
+  const info = getDayShiftInfo(entry, templates);
+  if(!info) return false;
+  return Object.entries(entry.assignments||{}).some(([shiftId,eid])=>{
+    if(eid!==empId) return false;
+    const shift = info.shifts.find(s=>s.id===shiftId);
+    return shift && shift.end === info.maxEnd;
+  });
+}
+function wasOpeningOnDay(dayEntries, dayIndex, empId, templates){
+  if(dayIndex<0 || dayIndex>=14) return false;
+  const entry = dayEntries[dayIndex];
+  const info = getDayShiftInfo(entry, templates);
+  if(!info) return false;
+  return Object.entries(entry.assignments||{}).some(([shiftId,eid])=>{
+    if(eid!==empId) return false;
+    const shift = info.shifts.find(s=>s.id===shiftId);
+    return shift && shift.start === info.minStart;
+  });
+}
+function backwardStreak(dayEntries, dayIndex, empId){
+  let count = 0;
+  for(let d=dayIndex; d>=0; d--){
+    if(didWorkDay(dayEntries, d, empId)) count++;
+    else break;
+  }
+  return count;
+}
+function forwardStreak(dayEntries, dayIndex, empId){
+  let count = 0;
+  for(let d=dayIndex; d<14; d++){
+    if(didWorkDay(dayEntries, d, empId)) count++;
+    else break;
+  }
+  return count;
+}
+
+function runAutoPopulateAttempt(baseDayEntries, key, jitter){
+  const dayEntries = JSON.parse(JSON.stringify(baseDayEntries));
+  const start = new Date(key+'T00:00:00');
+  const dayMeta = [];
+  for(let i=0;i<14;i++){
+    const d = new Date(start); d.setDate(start.getDate()+i);
+    dayMeta.push({
+      dayAbbr: DAYS[d.getDay()===0?6:d.getDay()-1],
+      dateStr: d.toISOString().slice(0,10),
+      weekHalf: i<7 ? 0 : 1
+    });
+  }
+
+  const daysWorkedWeek = {};
+  const weekendWorked = {};
+  employees.forEach(e=>{ daysWorkedWeek[e.id]=[0,0]; weekendWorked[e.id]={0:null,1:null}; });
+  for(let i=0;i<14;i++){
+    const uniqueToday = new Set(Object.values(dayEntries[i].assignments||{}));
+    uniqueToday.forEach(empId=>{
+      if(!daysWorkedWeek[empId]) return;
+      daysWorkedWeek[empId][dayMeta[i].weekHalf]++;
+      if(dayMeta[i].dayAbbr==='Sat'||dayMeta[i].dayAbbr==='Sun') weekendWorked[empId][dayMeta[i].weekHalf]=dayMeta[i].dayAbbr;
+    });
+  }
+
+  let openSlots = [];
+  for(let i=0;i<14;i++){
+    const info = getDayShiftInfo(dayEntries[i], templates);
+    if(!info) continue;
+    info.shifts.forEach(s=>{
+      if(!dayEntries[i].assignments[s.id]) openSlots.push({ dayIndex:i, shift:s });
+    });
+  }
+  const totalOpen = openSlots.length;
+  let filledCount = 0;
+
+  while(openSlots.length > 0){
+    let bestIdx = -1, bestCandidates = null;
+    for(let idx=0; idx<openSlots.length; idx++){
+      const { dayIndex, shift } = openSlots[idx];
+      const meta = dayMeta[dayIndex];
+      const info = getDayShiftInfo(dayEntries[dayIndex], templates);
+      const isOpeningShift = shift.start === info.minStart;
+      const isClosingShift = shift.end === info.maxEnd;
+      const candidates = eligibleEmployees(shift.role, meta.dayAbbr, meta.dateStr, shift.start, shift.end, dayEntries[dayIndex].isHoliday).filter(e=>{
+        if(didWorkDay(dayEntries, dayIndex, e.id)) return false;
+        const maxd = parseInt(e.maxdays||5,10);
+        if(daysWorkedWeek[e.id][meta.weekHalf] >= maxd) return false;
+        if(e.oneweekend && (meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun')){
+          const other = meta.dayAbbr==='Sat' ? 'Sun' : 'Sat';
+          if(weekendWorked[e.id][meta.weekHalf] === other) return false;
+        }
+        if(isOpeningShift && wasClosingOnDay(dayEntries, dayIndex-1, e.id, templates)) return false;
+        if(isClosingShift && wasOpeningOnDay(dayEntries, dayIndex+1, e.id, templates)) return false;
+        const total = backwardStreak(dayEntries, dayIndex-1, e.id) + 1 + forwardStreak(dayEntries, dayIndex+1, e.id);
+        if(total > 5) return false;
+        return true;
+      });
+      if(bestIdx === -1 || candidates.length < bestCandidates.length){
+        bestIdx = idx; bestCandidates = candidates;
+        if(candidates.length === 0) break;
+      }
+    }
+
+    const slot = openSlots[bestIdx];
+    if(bestCandidates.length === 0){
+      openSlots.splice(bestIdx, 1);
+      continue;
+    }
+    const dayCountOf = (empId)=> daysWorkedWeek[empId][0] + daysWorkedWeek[empId][1];
+    bestCandidates.sort((a,b)=> (dayCountOf(a.id) - dayCountOf(b.id)) + (Math.random()-0.5)*jitter);
+    const chosen = bestCandidates[0];
+    dayEntries[slot.dayIndex].assignments[slot.shift.id] = chosen.id;
+    daysWorkedWeek[chosen.id][dayMeta[slot.dayIndex].weekHalf]++;
+    if(dayMeta[slot.dayIndex].dayAbbr==='Sat'||dayMeta[slot.dayIndex].dayAbbr==='Sun'){
+      weekendWorked[chosen.id][dayMeta[slot.dayIndex].weekHalf] = dayMeta[slot.dayIndex].dayAbbr;
+    }
+    filledCount++;
+    openSlots.splice(bestIdx, 1);
+  }
+
+  return { dayEntries, filledCount, totalOpen };
+}
+
 document.getElementById('autoPopulateBtn').addEventListener('click', ()=>{
   const startVal = document.getElementById('weekStart').value;
   if(!startVal) return;
   const key = startVal;
-  const start = new Date(startVal+'T00:00:00');
   weekAssignments[key] = (weekAssignments[key]||new Array(14).fill(null)).map(normalizeDayEntry);
-  const dayEntries = weekAssignments[key];
+  const baseDayEntries = weekAssignments[key];
 
-  const daysWorked = {};       // empId -> count this 14-day block
-  const daysWorkedWeek = {};   // empId -> [week0count, week1count]
-  const workedOnDay = {};      // empId -> Set of day indices already assigned
-  const weekendWorked = {};    // empId -> {0:'Sat'|'Sun'|null, 1:'Sat'|'Sun'|null}
-  const streak = {};           // empId -> consecutive days worked ending at the most recently processed day
-  employees.forEach(e=>{
-    daysWorked[e.id]=0; daysWorkedWeek[e.id]=[0,0]; workedOnDay[e.id]=new Set();
-    weekendWorked[e.id]={0:null,1:null}; streak[e.id]=0;
-  });
-
-  // Seed the order-independent counts from any assignments already on the board (manual/set-schedule people).
-  for(let i=0;i<14;i++){
-    const entry = dayEntries[i];
-    if(!entry.templateId) continue;
-    const weekHalf = i<7 ? 0 : 1;
-    const d = new Date(start); d.setDate(start.getDate()+i);
-    const dayAbbr = DAYS[d.getDay()===0?6:d.getDay()-1];
-    Object.values(entry.assignments).forEach(empId=>{
-      if(!daysWorked[empId] && daysWorked[empId]!==0) return;
-      if(!workedOnDay[empId].has(i)){
-        workedOnDay[empId].add(i);
-        daysWorked[empId]++;
-        daysWorkedWeek[empId][weekHalf]++;
-        if(dayAbbr==='Sat'||dayAbbr==='Sun') weekendWorked[empId][weekHalf]=dayAbbr;
-      }
-    });
-  }
-
-  let filledCount = 0, totalOpen = 0;
-  let closedYesterday = new Set(); // empIds who worked the previous day's latest-ending shift
-
-  for(let i=0;i<14;i++){
-    const entry = dayEntries[i];
-    const weekHalf = i<7 ? 0 : 1;
-    const d = new Date(start); d.setDate(start.getDate()+i);
-    const dayAbbr = DAYS[d.getDay()===0?6:d.getDay()-1];
-    const dateStr = d.toISOString().slice(0,10);
-
-    if(!entry.templateId || !templates.find(t=>t.id===entry.templateId)){
-      // No shifts today — breaks everyone's streak, and there's no closer to carry forward.
-      employees.forEach(e=>{ streak[e.id] = 0; });
-      closedYesterday = new Set();
-      continue;
+  const ATTEMPTS = 10;
+  let best = null;
+  for(let attempt=0; attempt<ATTEMPTS; attempt++){
+    const jitter = attempt===0 ? 0 : 0.6;
+    const result = runAutoPopulateAttempt(baseDayEntries, key, jitter);
+    if(!best || result.filledCount > best.filledCount){
+      best = result;
+      if(best.filledCount === best.totalOpen) break;
     }
-
-    const tmpl = templates.find(t=>t.id===entry.templateId);
-    const shifts = (tmpl.shifts||[]).slice().sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-    const minStart = shifts.reduce((m,s)=> (m===null || s.start<m) ? s.start : m, null);
-    const maxEnd = shifts.reduce((m,s)=> (m===null || s.end>m) ? s.end : m, null);
-
-    shifts.forEach(s=>{
-      if(entry.assignments[s.id]) return; // already assigned (manual or previous pass)
-      totalOpen++;
-      const isOpeningShift = s.start === minStart;
-      const candidates = eligibleEmployees(s.role, dayAbbr, dateStr, s.start, s.end, entry.isHoliday).filter(e=>{
-        if(workedOnDay[e.id].has(i)) return false; // no double-booking same day
-        const maxd = parseInt(e.maxdays||5,10);
-        if(daysWorkedWeek[e.id][weekHalf] >= maxd) return false; // weekly cap
-        if(e.oneweekend && (dayAbbr==='Sat'||dayAbbr==='Sun')){
-          const other = dayAbbr==='Sat' ? 'Sun' : 'Sat';
-          if(weekendWorked[e.id][weekHalf] === other) return false; // already worked the other weekend day
-        }
-        if(isOpeningShift && closedYesterday.has(e.id)) return false; // no-clopen
-        if(streak[e.id] >= 5) return false; // max 5 consecutive days
-        return true;
-      });
-      if(candidates.length===0) return;
-      // Prefer whoever has worked the fewest days so far, for rough load balancing
-      candidates.sort((a,b)=> daysWorked[a.id]-daysWorked[b.id]);
-      const chosen = candidates[0];
-      entry.assignments[s.id] = chosen.id;
-      workedOnDay[chosen.id].add(i);
-      daysWorked[chosen.id]++;
-      daysWorkedWeek[chosen.id][weekHalf]++;
-      if(dayAbbr==='Sat'||dayAbbr==='Sun') weekendWorked[chosen.id][weekHalf]=dayAbbr;
-      filledCount++;
-    });
-
-    // Update streak + closer tracking from today's FINAL state (manual + solver-filled), for tomorrow's checks.
-    const todaysCloser = new Set();
-    Object.entries(entry.assignments).forEach(([shiftId, empId])=>{
-      const shift = shifts.find(sh=>sh.id===shiftId);
-      if(shift && shift.end === maxEnd) todaysCloser.add(empId);
-    });
-    employees.forEach(e=>{
-      streak[e.id] = workedOnDay[e.id].has(i) ? streak[e.id] + 1 : 0;
-    });
-    closedYesterday = todaysCloser;
   }
 
+  weekAssignments[key] = best.dayEntries;
   saveWeeks();
   renderDayGrid();
   const status = document.getElementById('autoPopulateStatus');
-  const unfilled = totalOpen - filledCount;
+  const unfilled = best.totalOpen - best.filledCount;
   status.textContent = unfilled>0
-    ? `Filled ${filledCount} shift${filledCount===1?'':'s'} — ${unfilled} left unfilled (no eligible/available match). Review before publishing.`
-    : `Filled ${filledCount} shift${filledCount===1?'':'s'} — role, availability, weekly caps, one-weekend-day, no-clopen, and 5-consecutive-day all checked. Still worth a quick look before publishing.`;
+    ? `Filled ${best.filledCount} shift${best.filledCount===1?'':'s'} — ${unfilled} left unfilled (no eligible/available match after trying several fill orders). Review before publishing.`
+    : `Filled ${best.filledCount} shift${best.filledCount===1?'':'s'} — role, availability, weekly caps, one-weekend-day, no-clopen, and 5-consecutive-day all checked. Still worth a quick look before publishing.`;
 });
 
 /* ===== BOOTSTRAP: load from Google Sheets, fall back to local cache if unreachable ===== */
