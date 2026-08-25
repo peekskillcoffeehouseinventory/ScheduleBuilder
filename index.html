@@ -17,11 +17,11 @@
     --white:#FFFFFF;
     --amber:#C7841E;
     --success:#4C7A5E;
-    --bar:#2E6DA4;
-    --kitchen:#4C7A5E;
-    --lead:#7A5FB0;
-    --dish:#8A8074;
-    --danger:#B0503C;
+    --bar:#0B5FCC;
+    --kitchen:#1E8E3E;
+    --lead:#8E24AA;
+    --dish:#546E7A;
+    --danger:#D32F2F;
   }
   *{box-sizing:border-box;}
   body{
@@ -106,7 +106,7 @@
   .tag.lead{background:rgba(122,95,176,.13);color:var(--lead);}
   .tag.dish{background:rgba(138,128,116,.15);color:var(--dish);}
   .tag.register{background:rgba(199,132,30,.14);color:var(--amber);}
-  .tag.training{background:rgba(176,80,60,.13);color:var(--danger);}
+  .tag.training{background:rgba(211,47,47,.16);color:var(--danger);font-weight:800;}
 
   /* Modal */
   .overlay{position:fixed;inset:0;background:rgba(43,38,32,.45);display:none;align-items:flex-start;justify-content:center;padding:3vh 1rem;overflow-y:auto;z-index:10;}
@@ -205,6 +205,7 @@
     padding:9px;display:flex;flex-direction:column;background:var(--white);transition:border-color .15s, background .15s;
   }
   .day-cell.filled{border-style:solid;}
+  .day-cell.day-has-staff{box-shadow:0 0 0 3px #F4C430;border-color:#F4C430;}
   .day-cell.dragover{border-color:var(--teal);background:var(--teal-light);}
   .day-cell .dc-date{font-size:10.5px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.02em;}
   .day-cell .dc-oncall{margin-top:4px;}
@@ -232,7 +233,8 @@
   .role-lead{border-left-color:var(--lead) !important;}
   .role-dish{border-left-color:var(--dish) !important;}
   .role-register{border-left-color:var(--amber) !important;}
-  .dc-shift.changed-since-publish{outline:2px solid var(--amber);outline-offset:1px;background:#FDF3E4 !important;}
+  .dc-shift.changed-since-publish{background:#FFEB3B !important;box-shadow:inset 0 0 0 2px #E6C700;}
+  .dc-shift.changed-since-publish .dcs-time, .dc-shift.changed-since-publish .dcs-static-name{color:#4a3f00;}
   .dc-shift .dcs-static-name{font-size:11.5px;font-weight:600;color:var(--ink);}
   .dc-shift.staff-highlight{box-shadow:inset 0 0 0 2px #F4C430;}
 
@@ -664,7 +666,8 @@ function employeesToRows(list){
       bar:fromBool(e.bar), kitchen:fromBool(e.kitchen), dish:fromBool(e.dish),
       register:fromBool(e.register), poslead:fromBool(e.poslead),
       training:fromBool(e.training), trainrole:e.trainrole || '',
-      prefers:e.prefers || 'none', oneweekend:fromBool(e.oneweekend)
+      prefers:e.prefers || 'none', oneweekend:fromBool(e.oneweekend),
+      color:e.color || ''
     };
     DAYS.forEach(day => {
       const key = day.toLowerCase();
@@ -688,9 +691,19 @@ function rowsToEmployees(rows){
       register:toBool(r.register), poslead:toBool(r.poslead),
       training:toBool(r.training), trainrole:r.trainrole || null,
       prefers:r.prefers || 'none', oneweekend:toBool(r.oneweekend),
+      color:r.color || null,
       availability
     };
   });
+}
+function generateRandomEmployeeColor(){
+  const hue = Math.floor(Math.random()*360);
+  return `hsl(${hue}, 68%, 38%)`;
+}
+function getEmployeeColor(emp){
+  if(!emp) return 'inherit';
+  if(!emp.color){ emp.color = generateRandomEmployeeColor(); }
+  return emp.color;
 }
 function templatesToRows(list){
   const templateRows = list.map(t => ({ id:t.id, name:t.name, color:t.color }));
@@ -875,7 +888,7 @@ function render(){
       if(emp.training) tags.push(`<span class="tag training">Training · ${escapeHtml(emp.trainrole||'')}</span>`);
       row.innerHTML = `
         <div class="row-left">
-          <div class="row-name">${escapeHtml(emp.first)} ${escapeHtml(emp.last)}</div>
+          <div class="row-name" style="color:${getEmployeeColor(emp)};">${escapeHtml(emp.first)} ${escapeHtml(emp.last)}</div>
           <div class="row-pos">${emp.level}</div>
         </div>
         <div class="row-tags">${tags.join('')}</div>`;
@@ -957,6 +970,7 @@ document.getElementById('saveEmpBtn').addEventListener('click', (e)=>{
       const timeInput = document.querySelector(`.avail-time[data-day="${day}"]`);
       availability[day] = { mode: sel.value, time: (sel.value==='before'||sel.value==='after') ? timeInput.value : null };
     });
+    const existingColor = editingId ? (employees.find(e=>e.id===editingId) || {}).color : null;
     const data = {
       id: editingId || ('e_' + Date.now()),
       first: document.getElementById('f-first').value.trim(),
@@ -972,6 +986,7 @@ document.getElementById('saveEmpBtn').addEventListener('click', (e)=>{
       trainrole: document.getElementById('f-training').checked ? document.getElementById('f-trainrole').value : null,
       prefers: document.getElementById('f-prefers').value,
       oneweekend: document.getElementById('f-oneweekend').checked,
+      color: existingColor || generateRandomEmployeeColor(), // assigned once, kept forever after
       availability
     };
     if(!data.first || !data.last){
@@ -1304,7 +1319,7 @@ function openPrintView(startDate){
 
   const start = new Date(startDate+'T00:00:00');
   const dayEntries = (weekAssignments[startDate] || []).map(normalizeDayEntry);
-  const ROLE_HEX = { bar:'#2E6DA4', kitchen:'#4C7A5E', lead:'#7A5FB0', dish:'#8A8074', register:'#C7841E' };
+  const ROLE_HEX = { bar:'#0B5FCC', kitchen:'#1E8E3E', lead:'#8E24AA', dish:'#546E7A', register:'#C7841E' };
   const highlightEmpId = checkStaffSelectedId; // if someone's selected in Check Staff, mark their shifts
   const highlightEmp = highlightEmpId ? employees.find(e=>e.id===highlightEmpId) : null;
 
@@ -1313,33 +1328,34 @@ function openPrintView(startDate){
     const dateLabel = d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
     const entry = dayEntries[i] || { templateId:null, assignments:{} };
     const tmpl = entry.templateId ? templates.find(t=>t.id===entry.templateId) : null;
-    let shiftsHtml = '<div style="color:#aaa;font-size:9px;">No shifts</div>';
+    let shiftsHtml = '<div style="color:#aaa;font-size:8px;">No shifts</div>';
     if(tmpl){
       const shifts = (tmpl.shifts||[]).slice().sort((a,b)=>(a.start||'').localeCompare(b.start||''));
       const rendered = shifts.map(s=>{
         const empId = entry.assignments[s.id];
         const emp = empId ? employees.find(e=>e.id===empId) : null;
         const name = emp ? `${emp.first} ${emp.last}` : '—';
+        const nameColor = emp ? getEmployeeColor(emp) : '#333';
         const brk = breakLabel(s.start, s.end);
         const color = ROLE_HEX[s.role] || '#999';
         const isHighlighted = highlightEmpId && empId === highlightEmpId;
         const highlightStyle = isHighlighted ? 'background:#FFF3B0;box-shadow:0 0 0 1.5px #F4C430;' : '';
-        return `<div style="border-left:3px solid ${color};padding:2px 5px;margin-bottom:3px;${highlightStyle}">
-          <div style="font-weight:700;font-size:9px;">${escapeHtml(name)}</div>
-          <div style="color:#666;font-size:8px;">${ROLE_LABEL[s.role]} · ${to12h(s.start)}–${to12h(s.end)}${brk}</div>
+        return `<div style="border-left:3px solid ${color};padding:1.5px 4px;margin-bottom:2px;${highlightStyle}">
+          <div style="font-weight:700;font-size:8px;color:${nameColor};">${escapeHtml(name)}</div>
+          <div style="color:#666;font-size:7px;">${ROLE_LABEL[s.role]} · ${to12h(s.start)}–${to12h(s.end)}${brk}</div>
         </div>`;
       }).join('');
       if(rendered) shiftsHtml = rendered;
     }
     const onCallEmp = entry.onCall ? employees.find(e=>e.id===entry.onCall) : null;
     const onCallHtml = onCallEmp
-      ? `<div style="font-size:8px;color:#7A5FB0;font-weight:700;margin-bottom:3px;">On call: ${escapeHtml(onCallEmp.first)} ${escapeHtml(onCallEmp.last)}</div>`
+      ? `<div style="font-size:7px;color:#7A5FB0;font-weight:700;margin-bottom:2px;">On call: ${escapeHtml(onCallEmp.first)} ${escapeHtml(onCallEmp.last)}</div>`
       : '';
     const notesHtml = (entry.notes && entry.notes.trim())
-      ? `<div style="font-size:8px;color:#333;margin-top:5px;padding-top:4px;border-top:1px dashed #ccc;white-space:pre-wrap;">${escapeHtml(entry.notes)}</div>`
+      ? `<div style="font-size:7px;color:#333;margin-top:3px;padding-top:3px;border-top:1px dashed #ccc;white-space:pre-wrap;">${escapeHtml(entry.notes)}</div>`
       : '';
-    return `<td style="vertical-align:top;border:1px solid #999;padding:5px;width:14.28%;">
-      <div style="font-weight:700;font-size:10px;border-bottom:1px solid #999;margin-bottom:4px;padding-bottom:2px;">${dateLabel}</div>
+    return `<td style="vertical-align:top;border:1px solid #999;padding:3px;width:14.28%;">
+      <div style="font-weight:700;font-size:9px;border-bottom:1px solid #999;margin-bottom:3px;padding-bottom:1.5px;">${dateLabel}</div>
       ${onCallHtml}
       ${shiftsHtml}
       ${notesHtml}
@@ -1352,26 +1368,26 @@ function openPrintView(startDate){
   const rangeLabel = `${start.toLocaleDateString('en-US',{month:'long',day:'numeric'})} – ${end.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}`;
 
   const legend = Object.entries(ROLE_LABEL).map(([role,label]) =>
-    `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;font-size:9px;">
-      <span style="width:8px;height:8px;background:${ROLE_HEX[role]||'#999'};display:inline-block;border-radius:2px;"></span>${label}
+    `<span style="display:inline-flex;align-items:center;gap:3px;margin-right:10px;font-size:8px;">
+      <span style="width:7px;height:7px;background:${ROLE_HEX[role]||'#999'};display:inline-block;border-radius:2px;"></span>${label}
     </span>`
   ).join('');
 
   const highlightNote = highlightEmp
-    ? `<div style="font-size:10px;margin-bottom:8px;"><span style="background:#FFF3B0;box-shadow:0 0 0 1.5px #F4C430;padding:1px 6px;border-radius:3px;">${escapeHtml(highlightEmp.first)} ${escapeHtml(highlightEmp.last)}'s shifts highlighted</span></div>`
+    ? `<div style="font-size:8px;margin-bottom:5px;"><span style="background:#FFF3B0;box-shadow:0 0 0 1.5px #F4C430;padding:1px 5px;border-radius:3px;">${escapeHtml(highlightEmp.first)} ${escapeHtml(highlightEmp.last)}'s shifts highlighted</span></div>`
     : '';
 
   win.document.write(`<!DOCTYPE html>
 <html><head><title>PCH Schedule — ${rangeLabel}</title>
 <style>
-  @page{ size: landscape; margin: 0.3in; }
+  @page{ size: landscape; margin: 0.25in; }
   body{ font-family: Arial, sans-serif; margin:0; padding:0; }
   table{ border-collapse: collapse; width:100%; table-layout:fixed; }
-  h1{ font-size:16px; margin:0 0 4px; }
+  h1{ font-size:13px; margin:0 0 3px; }
 </style></head>
 <body>
   <h1>PCH Coffee — ${rangeLabel}</h1>
-  <div style="margin-bottom:8px;">${legend}</div>
+  <div style="margin-bottom:5px;">${legend}</div>
   ${highlightNote}
   <table><tbody>
     <tr>${row1}</tr>
@@ -1425,9 +1441,10 @@ function renderDayGrid(){
     const dayAbbr = DAYS[d.getDay()===0 ? 6 : d.getDay()-1];
     const dayEntry = dayEntries[i];
     const tmpl = dayEntry.templateId ? templates.find(t=>t.id===dayEntry.templateId) : null;
+    const dayHasSelectedStaff = checkStaffSelectedId && Object.values(dayEntry.assignments || {}).includes(checkStaffSelectedId);
 
     const cell = document.createElement('div');
-    cell.className = 'day-cell' + (tmpl ? ' filled' : '');
+    cell.className = 'day-cell' + (tmpl ? ' filled' : '') + (dayHasSelectedStaff ? ' day-has-staff' : '');
 
     if(!tmpl){
       cell.innerHTML = `
@@ -1452,9 +1469,10 @@ function renderDayGrid(){
         if(locked){
           const emp = employees.find(e=>e.id===assignedId);
           const nameText = emp ? `${escapeHtml(emp.first)} ${escapeHtml(emp.last)}` : '— Unassigned —';
+          const nameColor = emp ? `style="color:${getEmployeeColor(emp)};"` : '';
           return `<div class="dc-shift role-${s.role}${changedCls}${staffCls}" ${changedTitle}>
             <div class="dcs-time">${ROLE_LABEL[s.role]} · ${to12h(s.start)}–${to12h(s.end)}${brk}${changedTag}</div>
-            <div class="dcs-static-name">${nameText}</div>
+            <div class="dcs-static-name" ${nameColor}>${nameText}</div>
           </div>`;
         }
 
@@ -1715,8 +1733,8 @@ document.getElementById('editScheduleBtn').addEventListener('click', ()=>{
 document.getElementById('saveAndPublishBtn').addEventListener('click', ()=>{
   const sc = schedules.find(x=>x.startDate===activeScheduleKey);
   if(!sc) return;
-  // Re-snapshot the current state as the new published baseline — clears all "edited" highlights.
-  sc.publishedSnapshot = JSON.stringify(weekAssignments[activeScheduleKey] || []);
+  // Intentionally NOT re-snapshotting here — edited shifts stay highlighted permanently
+  // against the original publish, they don't reset just because you saved again.
   saveSchedules();
   currentScheduleReadOnly = true;
   updateEditorChrome();
@@ -1850,9 +1868,10 @@ function renderCheckStaffList(){
   wrap.innerHTML = '';
   staffOnSchedule.forEach(emp => {
     const pill = document.createElement('div');
+    const empColor = getEmployeeColor(emp);
     pill.className = 'template-pill' + (checkStaffSelectedId===emp.id ? ' selected' : '');
-    pill.style.borderLeftColor = 'var(--teal)';
-    pill.innerHTML = `<div class="tp-top"><span>${escapeHtml(emp.first)} ${escapeHtml(emp.last)}</span></div>`;
+    pill.style.borderLeftColor = empColor;
+    pill.innerHTML = `<div class="tp-top"><span style="color:${empColor};font-weight:700;">${escapeHtml(emp.first)} ${escapeHtml(emp.last)}</span></div>`;
     pill.addEventListener('click', ()=>{
       checkStaffSelectedId = (checkStaffSelectedId === emp.id) ? null : emp.id;
       renderCheckStaffList();
@@ -2122,6 +2141,11 @@ async function bootstrap(){
   try{
     const data = await sheetsLoadAll();
     employees = rowsToEmployees(data.Employees || []);
+    let colorsBackfilled = false;
+    employees.forEach(e=>{
+      if(!e.color){ e.color = generateRandomEmployeeColor(); colorsBackfilled = true; }
+    });
+    if(colorsBackfilled) pushToSheet('Employees', employeesToRows(employees));
     let loadedTemplates = rowsToTemplates(data.Templates || [], data.TemplateShifts || []);
     if(loadedTemplates.length === 0){
       // First time connecting to an empty sheet — seed the four base templates and push them up.
