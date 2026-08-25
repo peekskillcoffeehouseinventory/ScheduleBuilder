@@ -209,6 +209,10 @@
   .day-cell.dragover{border-color:var(--teal);background:var(--teal-light);}
   .day-cell .dc-date{font-size:10.5px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.02em;}
   .day-cell .dc-oncall{margin-top:4px;}
+  .day-cell .dc-holiday-toggle{display:flex;align-items:center;gap:4px;font-size:9.5px;color:var(--ink-soft);margin-top:4px;cursor:pointer;}
+  .day-cell .dc-holiday-toggle input{width:11px;height:11px;accent-color:#F4C430;}
+  .day-cell .dc-notes-top{margin-top:4px;}
+  .day-cell .dc-notes-btn.has-notes-top{background:#FFEB3B;border-style:solid;border-color:#E6C700;color:#4a3f00;font-weight:800;text-transform:uppercase;}
   .day-cell .dc-oncall select{width:100%;font-size:9.5px;padding:2px 3px;border-radius:5px;border:1px solid var(--line);background:var(--cream);color:var(--ink-soft);}
   .day-cell .dc-oncall select.set{color:var(--ink);font-weight:600;background:var(--white);}
   .day-cell .dc-notes{margin-top:6px;}
@@ -237,6 +241,8 @@
   .dc-shift.changed-since-publish .dcs-time, .dc-shift.changed-since-publish .dcs-static-name{color:#4a3f00;}
   .dc-shift .dcs-static-name{font-size:11.5px;font-weight:600;color:var(--ink);}
   .dc-shift.staff-highlight{box-shadow:inset 0 0 0 2px #F4C430;}
+  .dc-shift.unfilled-shift{box-shadow:inset 0 0 0 2px var(--danger);}
+  .dc-shift.staff-highlight.unfilled-shift{box-shadow:inset 0 0 0 2px #F4C430, inset 0 0 0 4px var(--danger);}
 
   .template-panel{width:230px;flex-shrink:0;background:var(--white);border:1px solid var(--line);border-radius:14px;padding:16px;}
   .template-panel h3{font-size:14px;margin:0 0 4px;font-weight:700;}
@@ -398,6 +404,7 @@
 
       <div class="builder-toolbar">
         <button type="button" class="primary" id="autoPopulateBtn">⚡ Auto-populate week</button>
+        <button type="button" class="ghost" id="clearAllBtn">🗑 Clear all</button>
         <span class="status-text" id="autoPopulateStatus"></span>
       </div>
       <div class="builder-layout" id="builderLayout">
@@ -595,6 +602,23 @@
       <div class="section-label">Weekly availability</div>
       <div id="availRows"></div>
 
+      <div class="field" style="margin-top:.75rem;">
+        <label class="check" style="font-weight:600;font-size:14.5px;">
+          <input type="checkbox" id="f-holiday-enabled"> Different availability on holidays
+        </label>
+        <div id="holidayRow" style="display:none;margin-top:.6rem;">
+          <div class="day-row" style="grid-template-columns:1fr 110px;">
+            <select id="f-holiday-mode">
+              <option value="all">All day</option>
+              <option value="none">Not available</option>
+              <option value="before">Available before</option>
+              <option value="after">Available after</option>
+            </select>
+            <input type="time" id="f-holiday-time" class="time-slot">
+          </div>
+        </div>
+      </div>
+
       <div class="section-label">Shift preference</div>
       <div class="section-hint">Opens = before 2p &nbsp;·&nbsp; Mids = 8a–4p &nbsp;·&nbsp; Closes = after 1p</div>
       <div class="field">
@@ -661,13 +685,17 @@ function addDaysToDateStr(dateStr, n){
 
 function employeesToRows(list){
   return list.map(e => {
+    const holiday = e.holidayOverride || { enabled:false, mode:'all', time:null };
     const row = {
       id:e.id, first:e.first, last:e.last, level:e.level, maxdays:e.maxdays,
       bar:fromBool(e.bar), kitchen:fromBool(e.kitchen), dish:fromBool(e.dish),
       register:fromBool(e.register), poslead:fromBool(e.poslead),
       training:fromBool(e.training), trainrole:e.trainrole || '',
       prefers:e.prefers || 'none', oneweekend:fromBool(e.oneweekend),
-      color:e.color || ''
+      color:e.color || '',
+      holiday_enabled: fromBool(holiday.enabled),
+      holiday_mode: holiday.mode || 'all',
+      holiday_time: holiday.time || ''
     };
     DAYS.forEach(day => {
       const key = day.toLowerCase();
@@ -692,6 +720,11 @@ function rowsToEmployees(rows){
       training:toBool(r.training), trainrole:r.trainrole || null,
       prefers:r.prefers || 'none', oneweekend:toBool(r.oneweekend),
       color:r.color || null,
+      holidayOverride: {
+        enabled: toBool(r.holiday_enabled),
+        mode: r.holiday_mode || 'all',
+        time: r.holiday_time || null
+      },
       availability
     };
   });
@@ -740,7 +773,9 @@ function weekAssignmentsToRows(weekAssignments, scheduleList){
         id:`${sched.id}_d${i}`, schedule_id:sched.id, date,
         template_id:entry.templateId || '',
         on_call_employee_id: entry.onCall || '',
-        notes: entry.notes || ''
+        notes: entry.notes || '',
+        notesTop: entry.notesTop || '',
+        is_holiday: fromBool(entry.isHoliday)
       });
       Object.entries(entry.assignments||{}).forEach(([shiftId, empId]) => {
         if(!empId) return;
@@ -758,7 +793,9 @@ function rowsToWeekAssignments(dayRows, shiftRows, scheduleList){
     const arr = myDays.map(d => ({
       templateId:d.template_id || null, assignments:{},
       onCall: d.on_call_employee_id || null,
-      notes: d.notes || ''
+      notes: d.notes || '',
+      notesTop: d.notesTop || '',
+      isHoliday: toBool(d.is_holiday)
     }));
     myDays.forEach((d,i) => {
       shiftRows.filter(s => s.schedule_id===sched.id && s.date===d.date).forEach(s => { arr[i].assignments[s.shift_id]=s.employee_id; });
@@ -924,6 +961,13 @@ function openModal(id){
   document.getElementById('f-prefers').value = emp ? (emp.prefers || 'none') : 'none';
   document.getElementById('f-oneweekend').checked = emp ? !!emp.oneweekend : false;
 
+  const holiday = emp && emp.holidayOverride ? emp.holidayOverride : { enabled:false, mode:'all', time:null };
+  document.getElementById('f-holiday-enabled').checked = !!holiday.enabled;
+  document.getElementById('f-holiday-mode').value = holiday.mode || 'all';
+  document.getElementById('f-holiday-time').value = holiday.time || '';
+  document.getElementById('holidayRow').style.display = holiday.enabled ? 'block' : 'none';
+  document.getElementById('f-holiday-time').classList.toggle('show', holiday.mode === 'before' || holiday.mode === 'after');
+
   buildAvailRows();
   document.querySelectorAll('.avail-select').forEach(sel=>{
     const day = sel.dataset.day;
@@ -950,6 +994,12 @@ document.getElementById('overlay').addEventListener('click', (e)=>{
 });
 document.getElementById('f-training').addEventListener('change', (e)=>{
   document.getElementById('f-trainrole').style.display = e.target.checked ? 'block' : 'none';
+});
+document.getElementById('f-holiday-enabled').addEventListener('change', (e)=>{
+  document.getElementById('holidayRow').style.display = e.target.checked ? 'block' : 'none';
+});
+document.getElementById('f-holiday-mode').addEventListener('change', (e)=>{
+  document.getElementById('f-holiday-time').classList.toggle('show', e.target.value === 'before' || e.target.value === 'after');
 });
 
 document.getElementById('deleteBtn').addEventListener('click', ()=>{
@@ -987,6 +1037,11 @@ document.getElementById('saveEmpBtn').addEventListener('click', (e)=>{
       prefers: document.getElementById('f-prefers').value,
       oneweekend: document.getElementById('f-oneweekend').checked,
       color: existingColor || generateRandomEmployeeColor(), // assigned once, kept forever after
+      holidayOverride: {
+        enabled: document.getElementById('f-holiday-enabled').checked,
+        mode: document.getElementById('f-holiday-mode').value,
+        time: document.getElementById('f-holiday-time').value || null
+      },
       availability
     };
     if(!data.first || !data.last){
@@ -1289,12 +1344,14 @@ function formatDateLabel(dateStr){
 
 function normalizeDayEntry(entry){
   // Migrates old format (string templateId or null) to the new shape,
-  // and backfills onCall/notes for entries created before those fields existed.
+  // and backfills fields for entries created before they existed.
   if(entry === null || typeof entry === 'string'){
-    return { templateId: entry || null, assignments: {}, onCall: null, notes: '' };
+    return { templateId: entry || null, assignments: {}, onCall: null, notes: '', notesTop: '', isHoliday: false };
   }
   if(entry.onCall === undefined) entry.onCall = null;
   if(entry.notes === undefined) entry.notes = '';
+  if(entry.notesTop === undefined) entry.notesTop = '';
+  if(entry.isHoliday === undefined) entry.isHoliday = false;
   return entry;
 }
 
@@ -1304,14 +1361,20 @@ function isLockedView(){
 }
 
 let dayNotesEditIndex = null;
-function openDayNotesModal(i){
+let dayNotesEditField = 'notes'; // 'notes' (bottom, meetings) or 'notesTop' (top, holidays/events)
+function openDayNotesModal(i, field){
   dayNotesEditIndex = i;
+  dayNotesEditField = field || 'notes';
   const dayEntries = (weekAssignments[activeScheduleKey] || []).map(normalizeDayEntry);
   const entry = dayEntries[i];
   const start = new Date(activeScheduleKey + 'T00:00:00');
   const d = new Date(start); d.setDate(start.getDate() + i);
-  document.getElementById('dayNotesTitle').textContent = 'Notes — ' + formatDateLabel(d.toISOString().slice(0,10));
-  document.getElementById('dayNotesText').value = entry.notes || '';
+  const label = dayNotesEditField === 'notesTop' ? 'Holiday / Event Note — ' : 'Notes — ';
+  document.getElementById('dayNotesTitle').textContent = label + formatDateLabel(d.toISOString().slice(0,10));
+  document.getElementById('dayNotesText').value = entry[dayNotesEditField] || '';
+  document.getElementById('dayNotesText').placeholder = dayNotesEditField === 'notesTop'
+    ? 'e.g. LABOR DAY, holiday hours, special event...'
+    : 'Special events, meetings, reminders...';
   document.getElementById('dayNotesOverlay').classList.add('show');
   document.getElementById('dayNotesText').focus();
 }
@@ -1325,7 +1388,7 @@ document.getElementById('dayNotesSaveBtn').addEventListener('click', ()=>{
   if(dayNotesEditIndex === null) return;
   const dayEntries = weekAssignments[activeScheduleKey];
   dayEntries[dayNotesEditIndex] = normalizeDayEntry(dayEntries[dayNotesEditIndex]);
-  dayEntries[dayNotesEditIndex].notes = document.getElementById('dayNotesText').value;
+  dayEntries[dayNotesEditIndex][dayNotesEditField] = document.getElementById('dayNotesText').value;
   saveWeeks();
   document.getElementById('dayNotesOverlay').classList.remove('show');
   renderDayGrid();
@@ -1380,11 +1443,15 @@ function openPrintView(startDate){
     const onCallHtml = onCallEmp
       ? `<div style="font-size:7px;color:#7A5FB0;font-weight:700;margin-bottom:2px;">On call: ${escapeHtml(onCallEmp.first)} ${escapeHtml(onCallEmp.last)}</div>`
       : '';
+    const topNoteHtml = (entry.notesTop && entry.notesTop.trim())
+      ? `<div style="font-size:7.5px;font-weight:800;color:#000;background:#FFEB3B;text-transform:uppercase;padding:2px 3px;margin-bottom:2px;">${escapeHtml(entry.notesTop)}</div>`
+      : '';
     const notesHtml = (entry.notes && entry.notes.trim())
       ? `<div style="font-size:7px;color:#333;margin-top:3px;padding-top:3px;border-top:1px dashed #ccc;white-space:pre-wrap;">${escapeHtml(entry.notes)}</div>`
       : '';
     return `<td style="vertical-align:top;border:1px solid #999;padding:3px;width:14.28%;">
       <div style="font-weight:700;font-size:9px;border-bottom:1px solid #999;margin-bottom:3px;padding-bottom:1.5px;">${dateLabel}</div>
+      ${topNoteHtml}
       ${onCallHtml}
       ${shiftsHtml}
       ${notesHtml}
@@ -1457,6 +1524,16 @@ function renderDayGrid(){
       .concat(managers.map(m=>`<option value="${m.id}" ${m.id===dayEntry.onCall?'selected':''}>${escapeHtml(m.first)} ${escapeHtml(m.last)}</option>`));
     return `<div class="dc-oncall"><select data-oncall-day="${i}" class="${dayEntry.onCall?'set':''}">${options.join('')}</select></div>`;
   }
+  function buildHolidayToggleHtml(i, dayEntry){
+    return `<label class="dc-holiday-toggle"><input type="checkbox" data-holiday-day="${i}" ${dayEntry.isHoliday?'checked':''}> 🎉 Holiday</label>`;
+  }
+  function buildTopNotesHtml(i, dayEntry){
+    const hasNotes = !!(dayEntry.notesTop && dayEntry.notesTop.trim());
+    const preview = hasNotes
+      ? escapeHtml(dayEntry.notesTop.length > 42 ? dayEntry.notesTop.slice(0,42)+'…' : dayEntry.notesTop)
+      : '+ Holiday/event note';
+    return `<div class="dc-notes-top"><button type="button" class="dc-notes-btn${hasNotes?' has-notes-top':''}" data-notes-top-trigger="${i}">🎉 ${preview}</button></div>`;
+  }
   function buildNotesHtml(i, dayEntry){
     const hasNotes = !!(dayEntry.notes && dayEntry.notes.trim());
     const preview = hasNotes
@@ -1478,6 +1555,8 @@ function renderDayGrid(){
     if(!tmpl){
       cell.innerHTML = `
         <div class="dc-date">${formatDateLabel(d.toISOString().slice(0,10))}</div>
+        ${buildHolidayToggleHtml(i, dayEntry)}
+        ${buildTopNotesHtml(i, dayEntry)}
         ${buildOnCallHtml(i, dayEntry)}
         <div class="dc-empty-hint">${locked ? '' : 'Drop a template here'}</div>
         ${buildNotesHtml(i, dayEntry)}`;
@@ -1494,18 +1573,19 @@ function renderDayGrid(){
         const changedTitle = changed ? 'title="Edited since publish"' : '';
         const changedTag = changed ? ' <strong style="color:var(--amber);">· edited</strong>' : '';
         const staffCls = (checkStaffSelectedId && assignedId === checkStaffSelectedId) ? ' staff-highlight' : '';
+        const unfilledCls = !assignedId ? ' unfilled-shift' : '';
 
         if(locked){
           const emp = employees.find(e=>e.id===assignedId);
           const nameText = emp ? `${escapeHtml(emp.first)} ${escapeHtml(emp.last)}` : '— Unassigned —';
           const nameColor = emp ? `style="color:${getEmployeeColor(emp)};"` : '';
-          return `<div class="dc-shift role-${s.role}${changedCls}${staffCls}" ${changedTitle}>
+          return `<div class="dc-shift role-${s.role}${changedCls}${staffCls}${unfilledCls}" ${changedTitle}>
             <div class="dcs-time">${ROLE_LABEL[s.role]} · ${to12h(s.start)}–${to12h(s.end)}${brk}${changedTag}</div>
             <div class="dcs-static-name" ${nameColor}>${nameText}</div>
           </div>`;
         }
 
-        const eligible = eligibleEmployees(s.role, dayAbbr, dateStr, s.start, s.end);
+        const eligible = eligibleEmployees(s.role, dayAbbr, dateStr, s.start, s.end, dayEntry.isHoliday);
         const options = ['<option value="">— Unassigned —</option>']
           .concat(eligible.map(e=>`<option value="${e.id}" ${e.id===assignedId?'selected':''}>${escapeHtml(e.first)} ${escapeHtml(e.last)}</option>`));
         // Keep a currently-assigned person visible even if they'd no longer show as "eligible"
@@ -1513,13 +1593,15 @@ function renderDayGrid(){
           const emp = employees.find(e=>e.id===assignedId);
           if(emp) options.push(`<option value="${emp.id}" selected>${escapeHtml(emp.first)} ${escapeHtml(emp.last)} (check availability)</option>`);
         }
-        return `<div class="dc-shift role-${s.role}${changedCls}${staffCls}" ${changedTitle}>
+        return `<div class="dc-shift role-${s.role}${changedCls}${staffCls}${unfilledCls}" ${changedTitle}>
           <div class="dcs-time">${ROLE_LABEL[s.role]} · ${to12h(s.start)}–${to12h(s.end)}${brk}${changedTag}</div>
           <select data-day="${i}" data-shift="${s.id}" class="${assignedId?'':'unfilled'}">${options.join('')}</select>
         </div>`;
       }).join('');
       cell.innerHTML = `
         <div class="dc-date">${formatDateLabel(d.toISOString().slice(0,10))}</div>
+        ${buildHolidayToggleHtml(i, dayEntry)}
+        ${buildTopNotesHtml(i, dayEntry)}
         ${buildOnCallHtml(i, dayEntry)}
         <div class="dc-head">
           <span class="dc-tmpl-name">${escapeHtml(tmpl.name)}</span>
@@ -1529,7 +1611,7 @@ function renderDayGrid(){
         ${buildNotesHtml(i, dayEntry)}`;
     }
 
-    // On-call and notes are informational metadata — always editable, even in the locked view.
+    // On-call, notes, and Holiday are informational metadata — always editable, even in the locked view.
     const onCallSel = cell.querySelector('[data-oncall-day]');
     if(onCallSel){
       onCallSel.addEventListener('change', ()=>{
@@ -1539,10 +1621,25 @@ function renderDayGrid(){
         renderDayGrid();
       });
     }
+    const holidayToggle = cell.querySelector('[data-holiday-day]');
+    if(holidayToggle){
+      holidayToggle.addEventListener('change', ()=>{
+        const idx = +holidayToggle.dataset.holidayDay;
+        dayEntries[idx].isHoliday = holidayToggle.checked;
+        saveWeeks();
+        renderDayGrid();
+      });
+    }
     const notesTrigger = cell.querySelector('[data-notes-trigger]');
     if(notesTrigger){
       notesTrigger.addEventListener('click', ()=>{
-        openDayNotesModal(+notesTrigger.dataset.notesTrigger);
+        openDayNotesModal(+notesTrigger.dataset.notesTrigger, 'notes');
+      });
+    }
+    const notesTopTrigger = cell.querySelector('[data-notes-top-trigger]');
+    if(notesTopTrigger){
+      notesTopTrigger.addEventListener('click', ()=>{
+        openDayNotesModal(+notesTopTrigger.dataset.notesTopTrigger, 'notesTop');
       });
     }
 
@@ -1594,7 +1691,7 @@ function isOnTimeOff(empId, dateStr, shiftStart, shiftEnd){
   });
 }
 
-function eligibleEmployees(role, dayAbbr, dateStr, shiftStart, shiftEnd){
+function eligibleEmployees(role, dayAbbr, dateStr, shiftStart, shiftEnd, isHoliday){
   return employees.filter(e=>{
     const roleMatch =
       (role==='bar' && e.bar) ||
@@ -1603,7 +1700,9 @@ function eligibleEmployees(role, dayAbbr, dateStr, shiftStart, shiftEnd){
       (role==='register' && e.register) ||
       (role==='lead' && e.poslead);
     if(!roleMatch) return false;
-    const avail = e.availability && e.availability[dayAbbr];
+    // On a flagged holiday, someone with a holiday override uses THAT instead of their normal weekday rule.
+    const useHoliday = isHoliday && e.holidayOverride && e.holidayOverride.enabled;
+    const avail = useHoliday ? e.holidayOverride : (e.availability && e.availability[dayAbbr]);
     if(avail){
       if(avail.mode === 'none') return false;
       // "Available before X" — the shift must end at or before that time.
@@ -2050,6 +2149,17 @@ document.getElementById('publishBtn').addEventListener('click', ()=>{
    each day's clopen/streak checks can see the outcome of the day before it.
    Known limit: can't see across schedule boundaries — a streak or a close/open
    pair spanning into an adjacent published schedule won't be caught here. ---- */
+document.getElementById('clearAllBtn').addEventListener('click', ()=>{
+  if(!activeScheduleKey) return;
+  if(!confirm('Clear every shift assignment for this schedule? Templates, notes, on-call, and time off stay put.')) return;
+  const dayEntries = (weekAssignments[activeScheduleKey] || []).map(normalizeDayEntry);
+  dayEntries.forEach(entry => { entry.assignments = {}; });
+  weekAssignments[activeScheduleKey] = dayEntries;
+  saveWeeks();
+  renderDayGrid();
+  document.getElementById('autoPopulateStatus').textContent = 'All shift assignments cleared.';
+});
+
 document.getElementById('autoPopulateBtn').addEventListener('click', ()=>{
   const startVal = document.getElementById('weekStart').value;
   if(!startVal) return;
@@ -2112,7 +2222,7 @@ document.getElementById('autoPopulateBtn').addEventListener('click', ()=>{
       if(entry.assignments[s.id]) return; // already assigned (manual or previous pass)
       totalOpen++;
       const isOpeningShift = s.start === minStart;
-      const candidates = eligibleEmployees(s.role, dayAbbr, dateStr, s.start, s.end).filter(e=>{
+      const candidates = eligibleEmployees(s.role, dayAbbr, dateStr, s.start, s.end, entry.isHoliday).filter(e=>{
         if(workedOnDay[e.id].has(i)) return false; // no double-booking same day
         const maxd = parseInt(e.maxdays||5,10);
         if(daysWorkedWeek[e.id][weekHalf] >= maxd) return false; // weekly cap
