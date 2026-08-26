@@ -629,7 +629,7 @@
       </div>
 
       <div class="section-label">Shift preference</div>
-      <div class="section-hint">Opens = before 2p &nbsp;·&nbsp; Mids = 8a–4p &nbsp;·&nbsp; Closes = after 1p</div>
+      <div class="section-hint">Opens = before 2p &nbsp;·&nbsp; Mids = 8a–4p &nbsp;·&nbsp; Closes = noon or later</div>
       <div class="field">
         <select id="f-prefers">
           <option value="none">No preference</option>
@@ -2301,6 +2301,15 @@ function shiftMatchesPreference(shift, prefers, info){
   return false;
 }
 
+function shuffleDayOrder(){
+  const arr = Array.from({length:14}, (_,i)=>i);
+  for(let i=arr.length-1; i>0; i--){
+    const j = Math.floor(Math.random() * (i+1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function runPersonFill(empId){
   const key = activeScheduleKey;
   if(!key) return { filled:0 };
@@ -2332,15 +2341,20 @@ function runPersonFill(empId){
   }
 
   let filled = 0;
-  for(let i=0;i<14;i++){
-    if(didWorkDay(dayEntries, i, empId)) continue; // already working somewhere this day
+
+  // Tries to place empId into one shift on day i. roleFilter, if set, restricts which
+  // roles are considered on this pass (used to prioritize Team Lead below); leave
+  // unset to consider any role.
+  function tryFillDay(i, roleFilter){
+    if(didWorkDay(dayEntries, i, empId)) return false; // already working somewhere this day
     const info = getDayShiftInfo(dayEntries[i], templates);
-    if(!info) continue;
+    if(!info) return false;
     const meta = dayMeta[i];
-    if(weekCount[meta.weekHalf] >= maxd) continue; // already at their cap for this week
+    if(weekCount[meta.weekHalf] >= maxd) return false; // already at their cap for this week
 
     const eligibleToday = info.shifts.filter(s=>{
       if(dayEntries[i].assignments[s.id]) return false; // already filled by someone
+      if(roleFilter && s.role !== roleFilter) return false;
       const roleOk = eligibleEmployees(s.role, meta.dayAbbr, meta.dateStr, s.start, s.end, dayEntries[i].isHoliday).some(e=>e.id===empId);
       if(!roleOk) return false;
       if(emp.oneweekend && (meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun')){
@@ -2356,9 +2370,9 @@ function runPersonFill(empId){
       return true;
     });
 
-    if(eligibleToday.length === 0) continue;
+    if(eligibleToday.length === 0) return false;
 
-    let chosen = eligibleToday[0]; // shifts are pre-sorted by start time, so this is the earliest by default
+    let chosen = eligibleToday[0];
     if(emp.prefers && emp.prefers !== 'none'){
       const preferredMatches = eligibleToday.filter(s => shiftMatchesPreference(s, emp.prefers, info));
       if(preferredMatches.length) chosen = preferredMatches[0];
@@ -2368,7 +2382,21 @@ function runPersonFill(empId){
     weekCount[meta.weekHalf]++;
     if(meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun') weekendWorked[meta.weekHalf]=meta.dayAbbr;
     filled++;
+    return true;
   }
+
+  // Phase 1: if this person is lead-qualified, scan ALL 14 days (in random order, so
+  // early-week days don't get an unfair head start) for open Team Lead shifts and lock
+  // those in FIRST — lead coverage is scarcer and more important than filling a generic
+  // bar/kitchen slot someone else could just as easily cover.
+  if(emp.poslead){
+    shuffleDayOrder().forEach(i => tryFillDay(i, 'lead'));
+  }
+
+  // Phase 2: fill whatever weekly capacity is left with any other eligible shift,
+  // again in randomized day order so a Saturday shift has just as much chance of
+  // being picked as a Tuesday one.
+  shuffleDayOrder().forEach(i => tryFillDay(i, null));
 
   return { filled };
 }
