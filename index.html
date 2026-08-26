@@ -377,7 +377,10 @@
     <div id="builderList">
       <div class="toolbar" style="margin-top:1.5rem;">
         <span class="count">Schedules in progress</span>
-        <button class="primary" id="createScheduleBtn">+ Create new</button>
+        <div style="display:flex;gap:8px;">
+          <button class="ghost" id="importLastBtn">📥 Import last schedule</button>
+          <button class="primary" id="createScheduleBtn">+ Create new</button>
+        </div>
       </div>
       <div id="scheduleListEmpty" class="placeholder-box" style="display:none;">No drafts yet — create one to get started.</div>
       <div class="list" id="scheduleList"></div>
@@ -396,6 +399,7 @@
         <button type="button" class="ghost" id="timeOffModalBtn">🗓 Time Off Requests</button>
         <button type="button" class="ghost toggle-btn active" id="toggleTemplatesBtn">🗂 Templates</button>
         <button type="button" class="ghost toggle-btn" id="checkStaffBtn">👤 Check Staff</button>
+        <button type="button" class="ghost toggle-btn" id="toggleGapsBtn">🚨 Show Gaps</button>
         <button type="button" class="ghost" id="printScheduleBtn">🖨 Print</button>
         <button type="button" class="ghost" id="saveProgressBtn">💾 Save</button>
         <span class="status-text" id="saveProgressStatus" style="align-self:center;"></span>
@@ -409,6 +413,7 @@
         <button type="button" class="ghost" id="clearAllBtn">🗑 Clear all</button>
         <select id="fillPersonSelect" style="padding:.6rem .7rem;border:1.5px solid var(--line);border-radius:9px;background:var(--white);color:var(--ink);font-family:inherit;font-size:13.5px;max-width:170px;"></select>
         <button type="button" class="ghost" id="fillPersonBtn">👤 Fill their shifts</button>
+        <button type="button" class="ghost" id="checkConflictsBtn">⚠️ Check for conflicts</button>
         <span class="status-text" id="autoPopulateStatus"></span>
       </div>
       <div class="builder-layout" id="builderLayout">
@@ -500,7 +505,7 @@
 <!-- ===== CREATE SCHEDULE MODAL ===== -->
 <div class="overlay" id="newSchedOverlay">
   <div class="modal" style="max-width:380px;">
-    <h2>New Schedule</h2>
+    <h2 id="newSchedTitle">New Schedule</h2>
     <div class="field">
       <label>Begin date</label>
       <input type="date" id="newSched-start">
@@ -1552,7 +1557,7 @@ function renderDayGrid(){
     const dayEntry = dayEntries[i];
     const tmpl = dayEntry.templateId ? templates.find(t=>t.id===dayEntry.templateId) : null;
     const dayHasSelectedStaff = checkStaffSelectedId && Object.values(dayEntry.assignments || {}).includes(checkStaffSelectedId);
-    const dayHasUnfilled = tmpl && (tmpl.shifts||[]).some(s => !dayEntry.assignments[s.id]);
+    const dayHasUnfilled = showUnfilledHighlight && tmpl && (tmpl.shifts||[]).some(s => !dayEntry.assignments[s.id]);
 
     const cell = document.createElement('div');
     cell.className = 'day-cell' + (tmpl ? ' filled' : '') + (dayHasSelectedStaff ? ' day-has-staff' : '') + (dayHasUnfilled ? ' day-has-unfilled' : '');
@@ -1578,7 +1583,7 @@ function renderDayGrid(){
         const changedTitle = changed ? 'title="Edited since publish"' : '';
         const changedTag = changed ? ' <strong style="color:var(--amber);">· edited</strong>' : '';
         const staffCls = (checkStaffSelectedId && assignedId === checkStaffSelectedId) ? ' staff-highlight' : '';
-        const unfilledCls = !assignedId ? ' unfilled-shift' : '';
+        const unfilledCls = (showUnfilledHighlight && !assignedId) ? ' unfilled-shift' : '';
 
         if(locked){
           const emp = employees.find(e=>e.id===assignedId);
@@ -1663,7 +1668,8 @@ function renderDayGrid(){
       const removeBtn = cell.querySelector('.dc-remove');
       if(removeBtn){
         removeBtn.addEventListener('click', ()=>{
-          dayEntries[i] = { templateId: null, assignments: {} };
+          dayEntries[i].templateId = null;
+          dayEntries[i].assignments = {};
           saveWeeks();
           renderDayGrid();
         });
@@ -1814,6 +1820,9 @@ function resetCheckStaffPanel(){
   const panel = document.getElementById('checkStaffPanel');
   if(btn) btn.classList.remove('active');
   if(panel) panel.style.display = 'none';
+  showUnfilledHighlight = false;
+  const gapsBtn = document.getElementById('toggleGapsBtn');
+  if(gapsBtn) gapsBtn.classList.remove('active');
 }
 
 function updateEditorChrome(){
@@ -1931,7 +1940,19 @@ document.getElementById('backToListBtn').addEventListener('click', ()=>{
   renderScheduleList();
 });
 
+let pendingImport = false;
+
 document.getElementById('createScheduleBtn').addEventListener('click', ()=>{
+  pendingImport = false;
+  document.getElementById('newSchedTitle').textContent = 'New Schedule';
+  document.getElementById('newSched-start').value = new Date().toISOString().slice(0,10);
+  updateNewSchedEnd();
+  document.getElementById('newSchedOverlay').classList.add('show');
+});
+document.getElementById('importLastBtn').addEventListener('click', ()=>{
+  if(schedules.length === 0){ alert('No existing schedules to import from yet.'); return; }
+  pendingImport = true;
+  document.getElementById('newSchedTitle').textContent = 'Import Last Schedule';
   document.getElementById('newSched-start').value = new Date().toISOString().slice(0,10);
   updateNewSchedEnd();
   document.getElementById('newSchedOverlay').classList.add('show');
@@ -1958,6 +1979,31 @@ document.getElementById('newSchedCreateBtn').addEventListener('click', ()=>{
   }
   schedules.push({id:'sc_'+Date.now(), startDate, status:'draft'});
   saveSchedules();
+
+  if(pendingImport){
+    // Copy forward the most recent OTHER schedule's staffing pattern (template + who's on each
+    // shift), day-of-week to day-of-week. On-call, notes, and holiday flags do NOT carry over —
+    // those are specific to that period, not a recurring pattern.
+    const source = schedules
+      .filter(s => s.startDate !== startDate)
+      .sort((a,b) => b.startDate.localeCompare(a.startDate))[0];
+    if(source){
+      const sourceDays = (weekAssignments[source.startDate] || []).map(normalizeDayEntry);
+      const newDays = [];
+      for(let i=0;i<14;i++){
+        const src = sourceDays[i] || { templateId:null, assignments:{} };
+        newDays.push({
+          templateId: src.templateId || null,
+          assignments: JSON.parse(JSON.stringify(src.assignments || {})),
+          onCall: null, notes: '', notesTop: '', isHoliday: false
+        });
+      }
+      weekAssignments[startDate] = newDays;
+      saveWeeks();
+    }
+    pendingImport = false;
+  }
+
   document.getElementById('newSchedOverlay').classList.remove('show');
   openScheduleEditor(startDate);
 });
@@ -1984,6 +2030,13 @@ document.getElementById('toggleTemplatesBtn').addEventListener('click', (e)=>{
 
 /* ===== CHECK STAFF SIDEBAR ===== */
 let checkStaffSelectedId = null;
+let showUnfilledHighlight = false; // off by default — always-on red was too noisy per Shaun's feedback
+
+document.getElementById('toggleGapsBtn').addEventListener('click', (e)=>{
+  showUnfilledHighlight = !showUnfilledHighlight;
+  e.currentTarget.classList.toggle('active', showUnfilledHighlight);
+  renderDayGrid();
+});
 
 document.getElementById('checkStaffBtn').addEventListener('click', (e)=>{
   const btn = e.currentTarget;
@@ -2338,6 +2391,107 @@ document.getElementById('fillPersonBtn').addEventListener('click', ()=>{
   document.getElementById('autoPopulateStatus').textContent = emp
     ? `Filled ${result.filled} day${result.filled===1?'':'s'} for ${emp.first} ${emp.last}.`
     : '';
+});
+
+/* ---- Check for conflicts: re-validates every CURRENT assignment on this schedule
+   (whether typed manually, filled by auto-populate, or copied in via Import) against
+   this period's real constraints — availability/holiday overrides, time off, weekly
+   caps, one-weekend-day, no-clopen, and 5-consecutive-days. Anything that no longer
+   holds up gets unassigned and reported, so it's obvious what needs a human look. ---- */
+function runConflictCheck(){
+  const key = activeScheduleKey;
+  if(!key) return [];
+  const dayEntries = (weekAssignments[key] || []).map(normalizeDayEntry);
+  weekAssignments[key] = dayEntries;
+
+  const start = new Date(key+'T00:00:00');
+  const dayMeta = [];
+  for(let i=0;i<14;i++){
+    const d = new Date(start); d.setDate(start.getDate()+i);
+    dayMeta.push({
+      dayAbbr: DAYS[d.getDay()===0?6:d.getDay()-1],
+      dateStr: d.toISOString().slice(0,10),
+      weekHalf: i<7 ? 0 : 1
+    });
+  }
+
+  const daysWorkedWeek = {};
+  const weekendDaysWorked = {}; // empId -> [{Sat,Sun}, {Sat,Sun}]
+  employees.forEach(e=>{
+    daysWorkedWeek[e.id] = [0,0];
+    weekendDaysWorked[e.id] = [{Sat:false,Sun:false},{Sat:false,Sun:false}];
+  });
+  for(let i=0;i<14;i++){
+    const meta = dayMeta[i];
+    const uniqueToday = new Set(Object.values(dayEntries[i].assignments||{}));
+    uniqueToday.forEach(empId=>{
+      if(!daysWorkedWeek[empId]) return; // employee may have since been deleted
+      daysWorkedWeek[empId][meta.weekHalf]++;
+      if(meta.dayAbbr==='Sat') weekendDaysWorked[empId][meta.weekHalf].Sat = true;
+      if(meta.dayAbbr==='Sun') weekendDaysWorked[empId][meta.weekHalf].Sun = true;
+    });
+  }
+
+  const conflicts = [];
+  for(let i=0;i<14;i++){
+    const info = getDayShiftInfo(dayEntries[i], templates);
+    if(!info) continue;
+    const meta = dayMeta[i];
+    info.shifts.forEach(s=>{
+      const empId = dayEntries[i].assignments[s.id];
+      if(!empId) return;
+      const emp = employees.find(e=>e.id===empId);
+      let reason = null;
+
+      if(!emp){
+        reason = 'employee no longer exists';
+      } else {
+        const stillEligible = eligibleEmployees(s.role, meta.dayAbbr, meta.dateStr, s.start, s.end, dayEntries[i].isHoliday).some(e=>e.id===empId);
+        if(!stillEligible){
+          reason = 'no longer available or qualified for this shift';
+        } else {
+          const maxd = parseInt(emp.maxdays||5,10);
+          if(daysWorkedWeek[empId][meta.weekHalf] > maxd){
+            reason = `exceeds max days per week (${daysWorkedWeek[empId][meta.weekHalf]} > ${maxd})`;
+          } else if(emp.oneweekend && meta.dayAbbr==='Sun' && weekendDaysWorked[empId][meta.weekHalf].Sat && weekendDaysWorked[empId][meta.weekHalf].Sun){
+            reason = 'works both Saturday and Sunday (one-weekend-day rule)';
+          } else {
+            const isOpeningShift = s.start === info.minStart;
+            const isClosingShift = s.end === info.maxEnd;
+            if(isOpeningShift && wasClosingOnDay(dayEntries, i-1, empId, templates)){
+              reason = 'clopen — closed the day before';
+            } else if(isClosingShift && wasOpeningOnDay(dayEntries, i+1, empId, templates)){
+              reason = 'clopen — opens the day after';
+            } else {
+              const totalStreak = backwardStreak(dayEntries, i-1, empId) + 1 + forwardStreak(dayEntries, i+1, empId);
+              if(totalStreak > 5) reason = 'exceeds 5 consecutive days';
+            }
+          }
+        }
+      }
+
+      if(reason){
+        conflicts.push({ dateStr: meta.dateStr, role: ROLE_LABEL[s.role], name: emp ? `${emp.first} ${emp.last}` : 'Unknown', reason });
+        delete dayEntries[i].assignments[s.id];
+        if(emp) daysWorkedWeek[empId][meta.weekHalf]--;
+      }
+    });
+  }
+
+  return conflicts;
+}
+
+document.getElementById('checkConflictsBtn').addEventListener('click', ()=>{
+  const conflicts = runConflictCheck();
+  saveWeeks();
+  renderDayGrid();
+  const status = document.getElementById('autoPopulateStatus');
+  if(conflicts.length === 0){
+    status.textContent = 'Checked every assignment — no conflicts found.';
+  } else {
+    const summary = conflicts.map(c => `${formatDateLabel(c.dateStr)} ${c.role} (was ${c.name} — ${c.reason})`).join('; ');
+    status.textContent = `Found and cleared ${conflicts.length} conflict${conflicts.length===1?'':'s'}: ${summary}`;
+  }
 });
 
 function runAutoPopulateAttempt(baseDayEntries, key, jitter){
