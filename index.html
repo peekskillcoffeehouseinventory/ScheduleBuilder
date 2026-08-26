@@ -206,6 +206,8 @@
   }
   .day-cell.filled{border-style:solid;}
   .day-cell.day-has-staff{box-shadow:0 0 0 3px #F4C430;border-color:#F4C430;}
+  .day-cell.day-has-unfilled{box-shadow:0 0 0 3px var(--danger);border-color:var(--danger);}
+  .day-cell.day-has-staff.day-has-unfilled{box-shadow:0 0 0 3px #F4C430, 0 0 0 6px var(--danger);}
   .day-cell.dragover{border-color:var(--teal);background:var(--teal-light);}
   .day-cell .dc-date{font-size:10.5px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.02em;}
   .day-cell .dc-oncall{margin-top:4px;}
@@ -405,6 +407,8 @@
       <div class="builder-toolbar">
         <button type="button" class="primary" id="autoPopulateBtn">⚡ Auto-populate week</button>
         <button type="button" class="ghost" id="clearAllBtn">🗑 Clear all</button>
+        <select id="fillPersonSelect" style="padding:.6rem .7rem;border:1.5px solid var(--line);border-radius:9px;background:var(--white);color:var(--ink);font-family:inherit;font-size:13.5px;max-width:170px;"></select>
+        <button type="button" class="ghost" id="fillPersonBtn">👤 Fill their shifts</button>
         <span class="status-text" id="autoPopulateStatus"></span>
       </div>
       <div class="builder-layout" id="builderLayout">
@@ -1548,9 +1552,10 @@ function renderDayGrid(){
     const dayEntry = dayEntries[i];
     const tmpl = dayEntry.templateId ? templates.find(t=>t.id===dayEntry.templateId) : null;
     const dayHasSelectedStaff = checkStaffSelectedId && Object.values(dayEntry.assignments || {}).includes(checkStaffSelectedId);
+    const dayHasUnfilled = tmpl && (tmpl.shifts||[]).some(s => !dayEntry.assignments[s.id]);
 
     const cell = document.createElement('div');
-    cell.className = 'day-cell' + (tmpl ? ' filled' : '') + (dayHasSelectedStaff ? ' day-has-staff' : '');
+    cell.className = 'day-cell' + (tmpl ? ' filled' : '') + (dayHasSelectedStaff ? ' day-has-staff' : '') + (dayHasUnfilled ? ' day-has-unfilled' : '');
 
     if(!tmpl){
       cell.innerHTML = `
@@ -1782,6 +1787,7 @@ function openScheduleEditor(startDate){
   renderDayGrid();
   renderTemplateList();
   renderPreview();
+  populateFillPersonSelect();
   document.getElementById('timeOffOverlay').classList.remove('show');
 }
 
@@ -1798,6 +1804,7 @@ function openPublishedView(startDate){
   renderDayGrid();
   renderTemplateList();
   renderPreview();
+  populateFillPersonSelect();
   document.getElementById('timeOffOverlay').classList.remove('show');
 }
 
@@ -2223,6 +2230,115 @@ function forwardStreak(dayEntries, dayIndex, empId){
   }
   return count;
 }
+
+/* ---- Per-person Auto Populate: fills only the selected employee into every shift
+   across the 14-day schedule where they're eligible, skipping everyone else and any
+   shift that's already filled. Meant for staff with a very fixed pattern — reuses the
+   exact same eligibility checks (role, availability/holiday, time off, weekly cap,
+   one-weekend, no-clopen, 5-consecutive) as the main solver. When someone's eligible
+   for more than one shift on the same day, their stated shift preference breaks the
+   tie; falls back to the earliest eligible shift if no preference is set or matches. ---- */
+function shiftMatchesPreference(shift, prefers, info){
+  // Tied to the same opening/closing-shift concept the clopen logic already uses,
+  // rather than a fixed clock time — a "Close Lead" starting at noon is still the
+  // day's closing shift even though it's before the "after 1p" hint text's cutoff.
+  if(prefers === 'opens') return shift.start === info.minStart;
+  if(prefers === 'closes') return shift.end === info.maxEnd;
+  if(prefers === 'mids') return shift.start !== info.minStart && shift.end !== info.maxEnd;
+  return false;
+}
+
+function runPersonFill(empId){
+  const key = activeScheduleKey;
+  if(!key) return { filled:0 };
+  weekAssignments[key] = (weekAssignments[key]||new Array(14).fill(null)).map(normalizeDayEntry);
+  const dayEntries = weekAssignments[key];
+  const emp = employees.find(e=>e.id===empId);
+  if(!emp) return { filled:0 };
+
+  const start = new Date(key+'T00:00:00');
+  const dayMeta = [];
+  for(let i=0;i<14;i++){
+    const d = new Date(start); d.setDate(start.getDate()+i);
+    dayMeta.push({
+      dayAbbr: DAYS[d.getDay()===0?6:d.getDay()-1],
+      dateStr: d.toISOString().slice(0,10),
+      weekHalf: i<7 ? 0 : 1
+    });
+  }
+
+  const maxd = parseInt(emp.maxdays||5,10);
+  const weekCount = [0,0];
+  const weekendWorked = {0:null,1:null};
+  // Seed from whatever this person's already assigned to elsewhere in the schedule.
+  for(let i=0;i<14;i++){
+    if(didWorkDay(dayEntries, i, empId)){
+      weekCount[dayMeta[i].weekHalf]++;
+      if(dayMeta[i].dayAbbr==='Sat'||dayMeta[i].dayAbbr==='Sun') weekendWorked[dayMeta[i].weekHalf]=dayMeta[i].dayAbbr;
+    }
+  }
+
+  let filled = 0;
+  for(let i=0;i<14;i++){
+    if(didWorkDay(dayEntries, i, empId)) continue; // already working somewhere this day
+    const info = getDayShiftInfo(dayEntries[i], templates);
+    if(!info) continue;
+    const meta = dayMeta[i];
+    if(weekCount[meta.weekHalf] >= maxd) continue; // already at their cap for this week
+
+    const eligibleToday = info.shifts.filter(s=>{
+      if(dayEntries[i].assignments[s.id]) return false; // already filled by someone
+      const roleOk = eligibleEmployees(s.role, meta.dayAbbr, meta.dateStr, s.start, s.end, dayEntries[i].isHoliday).some(e=>e.id===empId);
+      if(!roleOk) return false;
+      if(emp.oneweekend && (meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun')){
+        const other = meta.dayAbbr==='Sat' ? 'Sun' : 'Sat';
+        if(weekendWorked[meta.weekHalf] === other) return false;
+      }
+      const isOpeningShift = s.start === info.minStart;
+      const isClosingShift = s.end === info.maxEnd;
+      if(isOpeningShift && wasClosingOnDay(dayEntries, i-1, empId, templates)) return false;
+      if(isClosingShift && wasOpeningOnDay(dayEntries, i+1, empId, templates)) return false;
+      const totalStreak = backwardStreak(dayEntries, i-1, empId) + 1 + forwardStreak(dayEntries, i+1, empId);
+      if(totalStreak > 5) return false;
+      return true;
+    });
+
+    if(eligibleToday.length === 0) continue;
+
+    let chosen = eligibleToday[0]; // shifts are pre-sorted by start time, so this is the earliest by default
+    if(emp.prefers && emp.prefers !== 'none'){
+      const preferredMatches = eligibleToday.filter(s => shiftMatchesPreference(s, emp.prefers, info));
+      if(preferredMatches.length) chosen = preferredMatches[0];
+    }
+
+    dayEntries[i].assignments[chosen.id] = empId;
+    weekCount[meta.weekHalf]++;
+    if(meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun') weekendWorked[meta.weekHalf]=meta.dayAbbr;
+    filled++;
+  }
+
+  return { filled };
+}
+
+function populateFillPersonSelect(){
+  const sel = document.getElementById('fillPersonSelect');
+  if(!sel) return;
+  sel.innerHTML = employees.slice().sort((a,b)=>(a.first+a.last).localeCompare(b.first+b.last))
+    .map(e=>`<option value="${e.id}">${escapeHtml(e.first)} ${escapeHtml(e.last)}</option>`).join('')
+    || '<option value="">No employees yet</option>';
+}
+
+document.getElementById('fillPersonBtn').addEventListener('click', ()=>{
+  const empId = document.getElementById('fillPersonSelect').value;
+  if(!empId) return;
+  const emp = employees.find(e=>e.id===empId);
+  const result = runPersonFill(empId);
+  saveWeeks();
+  renderDayGrid();
+  document.getElementById('autoPopulateStatus').textContent = emp
+    ? `Filled ${result.filled} day${result.filled===1?'':'s'} for ${emp.first} ${emp.last}.`
+    : '';
+});
 
 function runAutoPopulateAttempt(baseDayEntries, key, jitter){
   const dayEntries = JSON.parse(JSON.stringify(baseDayEntries));
