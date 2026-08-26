@@ -596,6 +596,19 @@
       </div>
 
       <div class="field">
+        <label>Role preference <span style="color:var(--ink-soft);font-weight:400;">(only matters if qualified for more than one)</span></label>
+        <div class="row2">
+          <select id="f-role-preference">
+            <option value="">No preference</option>
+          </select>
+          <div id="nonPreferredCapField" style="display:none;">
+            <input type="number" id="f-nonpreferred-cap" min="0" max="14" value="1" placeholder="Max non-preferred shifts">
+          </div>
+        </div>
+        <div class="section-hint" id="rolePrefHint" style="display:none;">Max shifts in their non-preferred role per two-week schedule</div>
+      </div>
+
+      <div class="field">
         <label class="check" style="font-weight:600;font-size:14.5px;margin-bottom:.5rem;">
           <input type="checkbox" id="f-training"> Currently training
         </label>
@@ -702,6 +715,8 @@ function employeesToRows(list){
       training:fromBool(e.training), trainrole:e.trainrole || '',
       prefers:e.prefers || 'none', oneweekend:fromBool(e.oneweekend),
       color:e.color || '',
+      role_preference: e.rolePreference || '',
+      non_preferred_cap: e.nonPreferredCap != null ? e.nonPreferredCap : 1,
       holiday_enabled: fromBool(holiday.enabled),
       holiday_mode: holiday.mode || 'all',
       holiday_time: holiday.time || ''
@@ -729,6 +744,8 @@ function rowsToEmployees(rows){
       training:toBool(r.training), trainrole:r.trainrole || null,
       prefers:r.prefers || 'none', oneweekend:toBool(r.oneweekend),
       color:r.color || null,
+      rolePreference: r.role_preference || null,
+      nonPreferredCap: r.non_preferred_cap != null && r.non_preferred_cap !== '' ? parseInt(r.non_preferred_cap,10) : 1,
       holidayOverride: {
         enabled: toBool(r.holiday_enabled),
         mode: r.holiday_mode || 'all',
@@ -970,6 +987,11 @@ function openModal(id){
   document.getElementById('f-prefers').value = emp ? (emp.prefers || 'none') : 'none';
   document.getElementById('f-oneweekend').checked = emp ? !!emp.oneweekend : false;
 
+  rebuildRolePreferenceOptions();
+  document.getElementById('f-role-preference').value = emp ? (emp.rolePreference || '') : '';
+  document.getElementById('f-nonpreferred-cap').value = emp && emp.nonPreferredCap != null ? emp.nonPreferredCap : 1;
+  updateRolePreferenceVisibility();
+
   const holiday = emp && emp.holidayOverride ? emp.holidayOverride : { enabled:false, mode:'all', time:null };
   document.getElementById('f-holiday-enabled').checked = !!holiday.enabled;
   document.getElementById('f-holiday-mode').value = holiday.mode || 'all';
@@ -1004,6 +1026,26 @@ document.getElementById('overlay').addEventListener('click', (e)=>{
 document.getElementById('f-training').addEventListener('change', (e)=>{
   document.getElementById('f-trainrole').style.display = e.target.checked ? 'block' : 'none';
 });
+
+const ROLE_PREF_LABELS = { bar:'Barista', kitchen:'Kitchen', dish:'Dish', register:'Register' };
+function rebuildRolePreferenceOptions(){
+  const sel = document.getElementById('f-role-preference');
+  const current = sel.value;
+  const checkedRoles = ['bar','kitchen','dish','register'].filter(r => document.getElementById('f-'+r).checked);
+  sel.innerHTML = '<option value="">No preference</option>' +
+    checkedRoles.map(r => `<option value="${r}">${ROLE_PREF_LABELS[r]}</option>`).join('');
+  // Keep the previous selection if it's still a valid (checked) role, otherwise reset.
+  sel.value = checkedRoles.includes(current) ? current : '';
+}
+function updateRolePreferenceVisibility(){
+  const hasPref = !!document.getElementById('f-role-preference').value;
+  document.getElementById('nonPreferredCapField').style.display = hasPref ? 'block' : 'none';
+  document.getElementById('rolePrefHint').style.display = hasPref ? 'block' : 'none';
+}
+['f-bar','f-kitchen','f-dish','f-register'].forEach(id=>{
+  document.getElementById(id).addEventListener('change', rebuildRolePreferenceOptions);
+});
+document.getElementById('f-role-preference').addEventListener('change', updateRolePreferenceVisibility);
 document.getElementById('f-holiday-enabled').addEventListener('change', (e)=>{
   document.getElementById('holidayRow').style.display = e.target.checked ? 'block' : 'none';
 });
@@ -1045,6 +1087,8 @@ document.getElementById('saveEmpBtn').addEventListener('click', (e)=>{
       trainrole: document.getElementById('f-training').checked ? document.getElementById('f-trainrole').value : null,
       prefers: document.getElementById('f-prefers').value,
       oneweekend: document.getElementById('f-oneweekend').checked,
+      rolePreference: document.getElementById('f-role-preference').value || null,
+      nonPreferredCap: parseInt(document.getElementById('f-nonpreferred-cap').value, 10) || 0,
       color: existingColor || generateRandomEmployeeColor(), // assigned once, kept forever after
       holidayOverride: {
         enabled: document.getElementById('f-holiday-enabled').checked,
@@ -1435,10 +1479,13 @@ function openPrintView(startDate){
         const brk = breakLabel(s.start, s.end, s.breakTime);
         const color = ROLE_HEX[s.role] || '#999';
         const isHighlighted = highlightEmpId && empId === highlightEmpId;
+        const isUnfilled = !empId; // always shown on print, regardless of the on-screen Show Gaps toggle
         const wasAssignedId = snapDay ? (snapDay.assignments[s.id] || '') : (empId||'');
         const isChanged = snapshot && wasAssignedId !== (empId||'');
-        // Edited-since-publish (solid highlighter yellow) takes priority over the Check Staff spot-highlight.
-        const highlightStyle = isChanged
+        // Priority: unfilled (red) > edited-since-publish (yellow) > Check Staff spot-highlight.
+        const highlightStyle = isUnfilled
+          ? 'background:#FFE0E0;box-shadow:inset 0 0 0 1.5px #D32F2F;'
+          : isChanged
           ? 'background:#FFEB3B;box-shadow:inset 0 0 0 1.5px #E6C700;'
           : (isHighlighted ? 'background:#FFF3B0;box-shadow:0 0 0 1.5px #F4C430;' : '');
         return `<div style="border-left:3px solid ${color};padding:1.5px 4px;margin-bottom:2px;${highlightStyle}">
@@ -2332,11 +2379,20 @@ function runPersonFill(empId){
   const maxd = parseInt(emp.maxdays||5,10);
   const weekCount = [0,0];
   const weekendWorked = {0:null,1:null};
+  let nonPreferredUsedCount = 0;
   // Seed from whatever this person's already assigned to elsewhere in the schedule.
   for(let i=0;i<14;i++){
     if(didWorkDay(dayEntries, i, empId)){
       weekCount[dayMeta[i].weekHalf]++;
       if(dayMeta[i].dayAbbr==='Sat'||dayMeta[i].dayAbbr==='Sun') weekendWorked[dayMeta[i].weekHalf]=dayMeta[i].dayAbbr;
+      if(emp.rolePreference){
+        const info0 = getDayShiftInfo(dayEntries[i], templates);
+        if(info0){
+          const shiftId0 = Object.keys(dayEntries[i].assignments).find(sid => dayEntries[i].assignments[sid] === empId);
+          const shift0 = shiftId0 ? info0.shifts.find(s=>s.id===shiftId0) : null;
+          if(shift0 && shift0.role !== emp.rolePreference) nonPreferredUsedCount++;
+        }
+      }
     }
   }
 
@@ -2352,11 +2408,15 @@ function runPersonFill(empId){
     const meta = dayMeta[i];
     if(weekCount[meta.weekHalf] >= maxd) return false; // already at their cap for this week
 
+    const nonPrefCap = emp.nonPreferredCap != null ? emp.nonPreferredCap : 1;
     const eligibleToday = info.shifts.filter(s=>{
       if(dayEntries[i].assignments[s.id]) return false; // already filled by someone
       if(roleFilter && s.role !== roleFilter) return false;
       const roleOk = eligibleEmployees(s.role, meta.dayAbbr, meta.dateStr, s.start, s.end, dayEntries[i].isHoliday).some(e=>e.id===empId);
       if(!roleOk) return false;
+      // Role preference: once they've hit their cap on non-preferred-role shifts, only
+      // their preferred role is still on the table for the rest of this fill.
+      if(emp.rolePreference && s.role !== emp.rolePreference && nonPreferredUsedCount >= nonPrefCap) return false;
       if(emp.oneweekend && (meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun')){
         const other = meta.dayAbbr==='Sat' ? 'Sun' : 'Sat';
         if(weekendWorked[meta.weekHalf] === other) return false;
@@ -2372,15 +2432,23 @@ function runPersonFill(empId){
 
     if(eligibleToday.length === 0) return false;
 
-    let chosen = eligibleToday[0];
+    // Prefer their preferred role over their non-preferred one when both are on offer today.
+    let pool = eligibleToday;
+    if(emp.rolePreference){
+      const roleMatched = eligibleToday.filter(s => s.role === emp.rolePreference);
+      if(roleMatched.length) pool = roleMatched;
+    }
+
+    let chosen = pool[0];
     if(emp.prefers && emp.prefers !== 'none'){
-      const preferredMatches = eligibleToday.filter(s => shiftMatchesPreference(s, emp.prefers, info));
+      const preferredMatches = pool.filter(s => shiftMatchesPreference(s, emp.prefers, info));
       if(preferredMatches.length) chosen = preferredMatches[0];
     }
 
     dayEntries[i].assignments[chosen.id] = empId;
     weekCount[meta.weekHalf]++;
     if(meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun') weekendWorked[meta.weekHalf]=meta.dayAbbr;
+    if(emp.rolePreference && chosen.role !== emp.rolePreference) nonPreferredUsedCount++;
     filled++;
     return true;
   }
@@ -2537,7 +2605,8 @@ function runAutoPopulateAttempt(baseDayEntries, key, jitter){
 
   const daysWorkedWeek = {};
   const weekendWorked = {};
-  employees.forEach(e=>{ daysWorkedWeek[e.id]=[0,0]; weekendWorked[e.id]={0:null,1:null}; });
+  const nonPreferredUsed = {};
+  employees.forEach(e=>{ daysWorkedWeek[e.id]=[0,0]; weekendWorked[e.id]={0:null,1:null}; nonPreferredUsed[e.id]=0; });
   for(let i=0;i<14;i++){
     const uniqueToday = new Set(Object.values(dayEntries[i].assignments||{}));
     uniqueToday.forEach(empId=>{
@@ -2545,63 +2614,97 @@ function runAutoPopulateAttempt(baseDayEntries, key, jitter){
       daysWorkedWeek[empId][dayMeta[i].weekHalf]++;
       if(dayMeta[i].dayAbbr==='Sat'||dayMeta[i].dayAbbr==='Sun') weekendWorked[empId][dayMeta[i].weekHalf]=dayMeta[i].dayAbbr;
     });
+    // Seed non-preferred-role usage from whatever's already assigned (manual/set-schedule people).
+    const info0 = getDayShiftInfo(dayEntries[i], templates);
+    if(info0){
+      Object.entries(dayEntries[i].assignments||{}).forEach(([shiftId, empId])=>{
+        const shift0 = info0.shifts.find(s=>s.id===shiftId);
+        const emp0 = employees.find(e=>e.id===empId);
+        if(shift0 && emp0 && emp0.rolePreference && emp0.rolePreference !== shift0.role){
+          nonPreferredUsed[empId] = (nonPreferredUsed[empId]||0) + 1;
+        }
+      });
+    }
   }
 
-  let openSlots = [];
+  let totalOpen = 0, filledCount = 0;
+
+  // Most-constrained-first fill over a given list of {dayIndex, shift} slots, mutating
+  // dayEntries/daysWorkedWeek/weekendWorked in place as it goes.
+  function fillSlots(openSlots){
+    totalOpen += openSlots.length;
+    while(openSlots.length > 0){
+      let bestIdx = -1, bestCandidates = null;
+      for(let idx=0; idx<openSlots.length; idx++){
+        const { dayIndex, shift } = openSlots[idx];
+        if(dayEntries[dayIndex].assignments[shift.id]){ openSlots.splice(idx,1); idx--; continue; }
+        const meta = dayMeta[dayIndex];
+        const info = getDayShiftInfo(dayEntries[dayIndex], templates);
+        const isOpeningShift = shift.start === info.minStart;
+        const isClosingShift = shift.end === info.maxEnd;
+        const rawCandidates = eligibleEmployees(shift.role, meta.dayAbbr, meta.dateStr, shift.start, shift.end, dayEntries[dayIndex].isHoliday).filter(e=>{
+          if(didWorkDay(dayEntries, dayIndex, e.id)) return false;
+          const maxd = parseInt(e.maxdays||5,10);
+          if(daysWorkedWeek[e.id][meta.weekHalf] >= maxd) return false;
+          if(e.oneweekend && (meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun')){
+            const other = meta.dayAbbr==='Sat' ? 'Sun' : 'Sat';
+            if(weekendWorked[e.id][meta.weekHalf] === other) return false;
+          }
+          if(isOpeningShift && wasClosingOnDay(dayEntries, dayIndex-1, e.id, templates)) return false;
+          if(isClosingShift && wasOpeningOnDay(dayEntries, dayIndex+1, e.id, templates)) return false;
+          const total = backwardStreak(dayEntries, dayIndex-1, e.id) + 1 + forwardStreak(dayEntries, dayIndex+1, e.id);
+          if(total > 5) return false;
+          return true;
+        });
+        // Role preference: try people with no preference or a matching preference first;
+        // only fall back to someone whose preference points elsewhere, and only up to
+        // their own cap on non-preferred-role shifts for this schedule.
+        const preferredTier = rawCandidates.filter(e => !e.rolePreference || e.rolePreference === shift.role);
+        const nonPreferredTier = rawCandidates.filter(e => e.rolePreference && e.rolePreference !== shift.role &&
+          nonPreferredUsed[e.id] < (e.nonPreferredCap != null ? e.nonPreferredCap : 1));
+        const candidates = preferredTier.length > 0 ? preferredTier : nonPreferredTier;
+        if(bestIdx === -1 || candidates.length < bestCandidates.length){
+          bestIdx = idx; bestCandidates = candidates;
+          if(candidates.length === 0) break;
+        }
+      }
+      if(bestIdx === -1) break;
+
+      const slot = openSlots[bestIdx];
+      if(bestCandidates.length === 0){
+        openSlots.splice(bestIdx, 1);
+        continue;
+      }
+      const dayCountOf = (empId)=> daysWorkedWeek[empId][0] + daysWorkedWeek[empId][1];
+      bestCandidates.sort((a,b)=> (dayCountOf(a.id) - dayCountOf(b.id)) + (Math.random()-0.5)*jitter);
+      const chosen = bestCandidates[0];
+      dayEntries[slot.dayIndex].assignments[slot.shift.id] = chosen.id;
+      daysWorkedWeek[chosen.id][dayMeta[slot.dayIndex].weekHalf]++;
+      if(dayMeta[slot.dayIndex].dayAbbr==='Sat'||dayMeta[slot.dayIndex].dayAbbr==='Sun'){
+        weekendWorked[chosen.id][dayMeta[slot.dayIndex].weekHalf] = dayMeta[slot.dayIndex].dayAbbr;
+      }
+      if(chosen.rolePreference && chosen.rolePreference !== slot.shift.role){
+        nonPreferredUsed[chosen.id] = (nonPreferredUsed[chosen.id]||0) + 1;
+      }
+      filledCount++;
+      openSlots.splice(bestIdx, 1);
+    }
+  }
+
+  let allSlots = [];
   for(let i=0;i<14;i++){
     const info = getDayShiftInfo(dayEntries[i], templates);
     if(!info) continue;
     info.shifts.forEach(s=>{
-      if(!dayEntries[i].assignments[s.id]) openSlots.push({ dayIndex:i, shift:s });
+      if(!dayEntries[i].assignments[s.id]) allSlots.push({ dayIndex:i, shift:s });
     });
   }
-  const totalOpen = openSlots.length;
-  let filledCount = 0;
 
-  while(openSlots.length > 0){
-    let bestIdx = -1, bestCandidates = null;
-    for(let idx=0; idx<openSlots.length; idx++){
-      const { dayIndex, shift } = openSlots[idx];
-      const meta = dayMeta[dayIndex];
-      const info = getDayShiftInfo(dayEntries[dayIndex], templates);
-      const isOpeningShift = shift.start === info.minStart;
-      const isClosingShift = shift.end === info.maxEnd;
-      const candidates = eligibleEmployees(shift.role, meta.dayAbbr, meta.dateStr, shift.start, shift.end, dayEntries[dayIndex].isHoliday).filter(e=>{
-        if(didWorkDay(dayEntries, dayIndex, e.id)) return false;
-        const maxd = parseInt(e.maxdays||5,10);
-        if(daysWorkedWeek[e.id][meta.weekHalf] >= maxd) return false;
-        if(e.oneweekend && (meta.dayAbbr==='Sat'||meta.dayAbbr==='Sun')){
-          const other = meta.dayAbbr==='Sat' ? 'Sun' : 'Sat';
-          if(weekendWorked[e.id][meta.weekHalf] === other) return false;
-        }
-        if(isOpeningShift && wasClosingOnDay(dayEntries, dayIndex-1, e.id, templates)) return false;
-        if(isClosingShift && wasOpeningOnDay(dayEntries, dayIndex+1, e.id, templates)) return false;
-        const total = backwardStreak(dayEntries, dayIndex-1, e.id) + 1 + forwardStreak(dayEntries, dayIndex+1, e.id);
-        if(total > 5) return false;
-        return true;
-      });
-      if(bestIdx === -1 || candidates.length < bestCandidates.length){
-        bestIdx = idx; bestCandidates = candidates;
-        if(candidates.length === 0) break;
-      }
-    }
-
-    const slot = openSlots[bestIdx];
-    if(bestCandidates.length === 0){
-      openSlots.splice(bestIdx, 1);
-      continue;
-    }
-    const dayCountOf = (empId)=> daysWorkedWeek[empId][0] + daysWorkedWeek[empId][1];
-    bestCandidates.sort((a,b)=> (dayCountOf(a.id) - dayCountOf(b.id)) + (Math.random()-0.5)*jitter);
-    const chosen = bestCandidates[0];
-    dayEntries[slot.dayIndex].assignments[slot.shift.id] = chosen.id;
-    daysWorkedWeek[chosen.id][dayMeta[slot.dayIndex].weekHalf]++;
-    if(dayMeta[slot.dayIndex].dayAbbr==='Sat'||dayMeta[slot.dayIndex].dayAbbr==='Sun'){
-      weekendWorked[chosen.id][dayMeta[slot.dayIndex].weekHalf] = dayMeta[slot.dayIndex].dayAbbr;
-    }
-    filledCount++;
-    openSlots.splice(bestIdx, 1);
-  }
+  // Phase 1: Team Lead shifts across the WHOLE schedule first — scarcer and more
+  // important to cover than a generic bar/kitchen slot several people could take.
+  fillSlots(allSlots.filter(sl => sl.shift.role === 'lead'));
+  // Phase 2: everything else.
+  fillSlots(allSlots.filter(sl => sl.shift.role !== 'lead'));
 
   return { dayEntries, filledCount, totalOpen };
 }
